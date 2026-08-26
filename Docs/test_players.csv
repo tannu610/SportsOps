@@ -1,0 +1,7 @@
+Employee ID,Name,Contact,Sport,Category
+EMP201,Rajesh Kumar,9988776655,Badminton,Men's Singles
+EMP202,Anita Desai,9988776656,Badminton,Women's Singles
+EMP203,Suresh Iyer,9988776657,Table Tennis,Men's Singles
+EMP201,Duplicate Raj,,Badminton,Men's Singles
+EMP204,,9988776658,Chess,Mixed
+,No ID Player,9988776659,Carrom,Mixed
