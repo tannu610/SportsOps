@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { Plus, Clock, AlertTriangle, X, Trash2, CheckCircle2, PlayCircle, XCircle, Trophy } from "lucide-react";
+import { Plus, Clock, AlertTriangle, X, Trash2, CheckCircle2, PlayCircle, XCircle, Trophy, Bell } from "lucide-react";
 import { createClient } from "@/utils/supabase/client";
 
 const SPORT_CONFIG: Record<string, { areaLabel: string; areas: string[]; categories: string[] }> = {
@@ -135,14 +135,28 @@ export default function MatchesPage() {
     date.setHours(Number(hours), Number(minutes), 0, 0);
     const matchTimestamp = date.toISOString();
 
-    const { error } = await supabase.from('matches').insert([{
+    const { data: newMatch, error } = await supabase.from('matches').insert([{
       event_id: eventId, sport, category, phase, playing_area: area,
       team1_p1_id: id_t1p1, team1_p2_id: id_t1p2, team2_p1_id: id_t2p1, team2_p2_id: id_t2p2,
-      scheduled_time: matchTimestamp, status: 'SCHEDULED'
-    }]);
+      scheduled_time: matchTimestamp, status: 'NOTIFIED'
+    }]).select().single();
 
     if (error) return alert("Error creating match: " + error.message);
     await supabase.rpc('call_players_for_match', { p_player_ids: selectedIds });
+    
+    // Automatically trigger push notifications for the created match
+    if (newMatch?.id) {
+      try {
+        await fetch('/api/push/notify', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ matchId: newMatch.id })
+        });
+      } catch (err) {
+        console.error("Failed to send automatic notification", err);
+      }
+    }
+
     setIsCreating(false);
     setT1p1(""); setT2p1(""); setT1p2(""); setT2p2(""); setMatchTime("");
   };
@@ -387,8 +401,28 @@ export default function MatchesPage() {
                 </div>
                 
                 {match.status !== 'COMPLETED' && (
-                  <div className="flex flex-wrap gap-3 bg-gray-50/50 p-4 sm:px-6 border-t border-gray-100">
-                    {match.status === 'SCHEDULED' && <button onClick={() => updateMatchStatus(match.id, 'LIVE')} className="px-5 py-2.5 bg-white text-indigo-700 border-2 border-indigo-100 hover:bg-indigo-50 hover:border-indigo-300 rounded-xl text-sm font-black transition-all flex items-center gap-2 shadow-sm"><PlayCircle className="w-4 h-4"/> Start Live</button>}
+                  <div className="flex flex-wrap gap-2 mt-4 pt-4 border-t border-gray-100 p-4 sm:px-6">
+                    {(match.status === 'SCHEDULED' || match.status === 'NOTIFIED') && (
+                      <button 
+                        onClick={async () => {
+                          const res = await fetch('/api/push/notify', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ matchId: match.id })
+                          });
+                          const data = await res.json();
+                          if (data.error) alert(`Error: ${data.error}`);
+                          else {
+                            alert(`Push notifications sent to ${data.count || 0} player(s).`);
+                            updateMatchStatus(match.id, 'NOTIFIED');
+                          }
+                        }}
+                        className="px-5 py-2.5 bg-white text-blue-600 border-2 border-blue-100 hover:bg-blue-50 rounded-xl text-sm font-black transition-all flex items-center gap-2 shadow-sm"
+                      >
+                        <Bell className="w-4 h-4"/> {match.status === 'NOTIFIED' ? 'Send Reminder' : 'Notify'}
+                      </button>
+                    )}
+                    {(match.status === 'SCHEDULED' || match.status === 'NOTIFIED') && <button onClick={() => updateMatchStatus(match.id, 'LIVE')} className="px-5 py-2.5 bg-white text-indigo-700 border-2 border-indigo-100 hover:bg-indigo-50 hover:border-indigo-300 rounded-xl text-sm font-black transition-all flex items-center gap-2 shadow-sm"><PlayCircle className="w-4 h-4"/> Start Live</button>}
                     {match.status === 'LIVE' && <button onClick={() => setFinishingMatch({ match, isWalkover: false })} className="px-5 py-2.5 bg-gradient-to-r from-emerald-500 to-teal-500 text-white hover:from-emerald-600 hover:to-teal-600 shadow-lg shadow-emerald-200 rounded-xl text-sm font-black flex items-center gap-2 transition-all"><CheckCircle2 className="w-4 h-4"/> Complete Match</button>}
                     {match.status === 'SCHEDULED' && <button onClick={() => updateMatchStatus(match.id, 'NO-SHOW PENDING')} className="px-5 py-2.5 border-2 border-gray-200 text-gray-500 bg-white hover:bg-gray-50 rounded-xl text-sm font-bold transition-all">Trigger No-Show</button>}
                     {match.status === 'NO-SHOW PENDING' && (
