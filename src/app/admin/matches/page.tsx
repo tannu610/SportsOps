@@ -15,7 +15,7 @@ const SPORT_CONFIG: Record<string, { areaLabel: string; areas: string[]; categor
 
 const PHASES = ["Round 1", "Round 2", "Round 3", "Quarter Final", "Semi Final", "Final"];
 
-type Player = { id: string; employee_id: string; name: string; contact_info: string; status: string; sport: string };
+type Player = { id: string; employee_id: string; name: string; contact_info: string; status: string; sport: string; category?: string; current_round?: number; };
 type Match = { 
   id: string; 
   sport: string;
@@ -61,7 +61,7 @@ export default function MatchesPage() {
         
         const { data: dbPlayers } = await supabase
           .from('players')
-          .select('id, employee_id, name, contact_info, status, sport')
+          .select('id, employee_id, name, contact_info, status, sport, category, current_round')
           .eq('event_id', currentEventId)
           .neq('status', 'REGISTERED')
           .neq('status', 'ABSENT')
@@ -73,10 +73,10 @@ export default function MatchesPage() {
           .from('matches')
           .select(`
             id, sport, category, phase, playing_area, scheduled_time, status,
-            team1_p1:players!fk_t1p1(id, employee_id, name, contact_info),
-            team1_p2:players!fk_t1p2(id, employee_id, name, contact_info),
-            team2_p1:players!fk_t2p1(id, employee_id, name, contact_info),
-            team2_p2:players!fk_t2p2(id, employee_id, name, contact_info)
+            team1_p1:players!fk_t1p1(id, employee_id, name, contact_info, status),
+            team1_p2:players!fk_t1p2(id, employee_id, name, contact_info, status),
+            team2_p1:players!fk_t2p1(id, employee_id, name, contact_info, status),
+            team2_p2:players!fk_t2p2(id, employee_id, name, contact_info, status)
           `)
           .eq('event_id', currentEventId)
           .order('created_at', { ascending: false });
@@ -103,9 +103,19 @@ export default function MatchesPage() {
     setArea(config.areas[0]);
   };
 
-  const getPlayerIdByEmpId = (empId: string) => {
+  const getPlayerIdByEmpId = (empId: string, matchSport: string, matchCategory: string) => {
     if (!empId) return null;
-    const p = players.find(pl => pl.employee_id.toUpperCase() === empId.toUpperCase());
+    const empMatches = players.filter(pl => pl.employee_id.toUpperCase() === empId.toUpperCase());
+    if (empMatches.length === 0) return null;
+    
+    // Exact category match
+    let p = empMatches.find(pl => (pl.category || '').toLowerCase() === matchCategory.toLowerCase());
+    // Fallbacks
+    if (!p) p = empMatches.find(pl => pl.sport.toLowerCase() === matchCategory.toLowerCase());
+    if (!p) p = empMatches.find(pl => pl.sport.toLowerCase().includes(matchCategory.toLowerCase()));
+    if (!p) p = empMatches.find(pl => pl.sport.toLowerCase().includes(matchSport.toLowerCase()));
+    if (!p) p = empMatches[0];
+
     return p ? p.id : null;
   };
 
@@ -113,10 +123,10 @@ export default function MatchesPage() {
     e.preventDefault();
     if (!eventId || !t1p1 || !t2p1 || !matchTime) return;
     
-    const id_t1p1 = getPlayerIdByEmpId(t1p1);
-    const id_t2p1 = getPlayerIdByEmpId(t2p1);
-    const id_t1p2 = getPlayerIdByEmpId(t1p2);
-    const id_t2p2 = getPlayerIdByEmpId(t2p2);
+    const id_t1p1 = getPlayerIdByEmpId(t1p1, sport, category);
+    const id_t2p1 = getPlayerIdByEmpId(t2p1, sport, category);
+    const id_t1p2 = getPlayerIdByEmpId(t1p2, sport, category);
+    const id_t2p2 = getPlayerIdByEmpId(t2p2, sport, category);
 
     if (!id_t1p1 || !id_t2p1) {
       alert("Invalid primary players selected. Please ensure Employee IDs are correct and they are eligible for this round.");
@@ -191,6 +201,10 @@ export default function MatchesPage() {
   const isDoubles = category.includes("Doubles");
 
   const eligiblePlayers = players.filter(p => {
+    // Exact category match ensures cross-category disqualification doesn't happen
+    const matchesCategory = p.category === category || p.sport === category || p.sport === `${sport} - ${category}` || p.sport === sport;
+    if (!matchesCategory) return false;
+
     if (phase === "Round 1") return p.status === "PRESENT" || p.status === "AVAILABLE";
     if (phase === "Round 2") return p.status === "QUALIFIED - Round 1";
     if (phase === "Round 3") return p.status === "QUALIFIED - Round 2";
@@ -198,6 +212,59 @@ export default function MatchesPage() {
     if (phase === "Semi Final") return p.status === "QUALIFIED - Quarter Final";
     if (phase === "Final") return p.status === "QUALIFIED - Semi Final";
     return true; 
+  });
+
+  const getMatchDisplayStatus = (match: Match) => {
+    if (match.status === 'COMPLETED' || match.status === 'LIVE' || match.status === 'NO-SHOW PENDING' || match.status === 'PLAYER_CONFIRMED') return match.status;
+    
+    const matchPlayers = [match.team1_p1, match.team1_p2, match.team2_p1, match.team2_p2].filter(Boolean) as Player[];
+    if (matchPlayers.length > 0) {
+      if (matchPlayers.some(p => p.status === 'UNAVAILABLE')) return 'PLAYER_UNAVAILABLE';
+      if (matchPlayers.every(p => p.status === 'AVAILABLE' || p.status === 'PRESENT')) return 'READY';
+    }
+    return match.status;
+  };
+
+  const renderPlayerStatus = (player: Player | null) => {
+    if (!player) return null;
+    if (player.status === 'UNAVAILABLE') {
+      return <span className="text-sm text-rose-500 font-bold ml-2">✕ Not Coming</span>;
+    } else if (player.status === 'AVAILABLE' || player.status === 'PRESENT' || player.status === 'CONFIRMED' || player.status === 'PLAYER_CONFIRMED') {
+      return <span className="text-sm text-emerald-500 font-bold ml-2">✓ Coming</span>;
+    }
+    return null;
+  };
+
+  const activeAlerts: { id: string, type: 'danger' | 'warning' | 'success' | 'info', title: string, message: string }[] = [];
+
+  matches.forEach(m => {
+    const displayStatus = getMatchDisplayStatus(m);
+    
+    if (displayStatus === 'NO-SHOW PENDING') {
+      activeAlerts.push({ id: m.id + '-noshow', type: 'warning', title: 'Walkover Required', message: `Match at ${m.playing_area} reached no-show limit. Confirm walkover or delete.` });
+    }
+    
+    if (displayStatus === 'PLAYER_UNAVAILABLE') {
+      activeAlerts.push({ id: m.id + '-rejected', type: 'danger', title: 'Match Rejected', message: `A player for match at ${m.playing_area} just clicked "I'M UNAVAILABLE". Please manually delete or walkover.` });
+    }
+
+    if (displayStatus === 'READY' || displayStatus === 'PLAYER_CONFIRMED') {
+      activeAlerts.push({ id: m.id + '-ready', type: 'success', title: 'Match Ready', message: `All players for match at ${m.playing_area} have confirmed. Match is ready to go LIVE.` });
+    }
+
+    if (displayStatus !== 'READY' && displayStatus !== 'PLAYER_CONFIRMED' && displayStatus !== 'LIVE' && displayStatus !== 'COMPLETED' && displayStatus !== 'PLAYER_UNAVAILABLE' && displayStatus !== 'NO-SHOW PENDING') {
+      const matchPlayers = [m.team1_p1, m.team1_p2, m.team2_p1, m.team2_p2].filter(Boolean) as Player[];
+      const confirmedPlayers = matchPlayers.filter(p => ['AVAILABLE', 'PRESENT', 'CONFIRMED', 'PLAYER_CONFIRMED'].includes(p.status));
+      
+      if (confirmedPlayers.length > 0 && confirmedPlayers.length < matchPlayers.length) {
+        activeAlerts.push({ 
+          id: m.id + '-partial', 
+          type: 'info', 
+          title: 'Player Confirmed',
+          message: `${confirmedPlayers.map(p => p.name).join(', ')} confirmed for match at ${m.playing_area}. Waiting for others.`
+        });
+      }
+    }
   });
 
   return (
@@ -342,20 +409,24 @@ export default function MatchesPage() {
           ) : matches.length === 0 ? (
             <div className="p-16 text-center text-gray-400 font-bold border-2 rounded-3xl border-dashed border-gray-200 bg-gray-50/50">No matches created yet.</div>
           ) : (
-            matches.map((match) => (
+            matches.map((match) => {
+              const displayStatus = getMatchDisplayStatus(match);
+              return (
               <div key={match.id} className={`rounded-3xl border-2 flex flex-col justify-between overflow-hidden transition-all duration-300 hover:shadow-xl ${
-                match.status === 'LIVE' ? 'bg-white border-emerald-400 shadow-emerald-100' : 
-                match.status === 'PLAYER_UNAVAILABLE' ? 'bg-rose-50/30 border-rose-300 shadow-rose-100' :
-                match.status === 'NO-SHOW PENDING' ? 'bg-amber-50/30 border-amber-300 shadow-amber-100' : 
-                match.status === 'COMPLETED' ? 'bg-gray-50 border-gray-200 opacity-60 grayscale-[0.2]' :
+                displayStatus === 'LIVE' ? 'bg-white border-emerald-400 shadow-emerald-100' : 
+                displayStatus === 'PLAYER_UNAVAILABLE' ? 'bg-rose-50/30 border-rose-300 shadow-rose-100' :
+                (displayStatus === 'READY' || displayStatus === 'PLAYER_CONFIRMED') ? 'bg-emerald-50/30 border-emerald-300 shadow-emerald-100' :
+                displayStatus === 'NO-SHOW PENDING' ? 'bg-amber-50/30 border-amber-300 shadow-amber-100' : 
+                displayStatus === 'COMPLETED' ? 'bg-gray-50 border-gray-200 opacity-60 grayscale-[0.2]' :
                 'bg-white border-gray-100 hover:border-indigo-200'
               }`}>
                 {/* Accent Top Bar */}
                 <div className={`h-1.5 w-full ${
-                  match.status === 'LIVE' ? 'bg-gradient-to-r from-emerald-400 to-teal-500' :
-                  match.status === 'PLAYER_UNAVAILABLE' ? 'bg-gradient-to-r from-rose-400 to-red-500' :
-                  match.status === 'NO-SHOW PENDING' ? 'bg-gradient-to-r from-amber-400 to-orange-500' :
-                  match.status === 'COMPLETED' ? 'bg-gray-300' :
+                  displayStatus === 'LIVE' ? 'bg-gradient-to-r from-emerald-400 to-teal-500' :
+                  displayStatus === 'PLAYER_UNAVAILABLE' ? 'bg-gradient-to-r from-rose-400 to-red-500' :
+                  (displayStatus === 'READY' || displayStatus === 'PLAYER_CONFIRMED') ? 'bg-gradient-to-r from-emerald-400 to-emerald-500' :
+                  displayStatus === 'NO-SHOW PENDING' ? 'bg-gradient-to-r from-amber-400 to-orange-500' :
+                  displayStatus === 'COMPLETED' ? 'bg-gray-300' :
                   'bg-gradient-to-r from-blue-500 to-indigo-500'
                 }`}></div>
 
@@ -363,13 +434,14 @@ export default function MatchesPage() {
                   <div className="flex items-center justify-between">
                     <div className="flex items-center gap-3">
                       <span className={`px-4 py-1.5 rounded-xl text-[10px] font-black uppercase tracking-widest ${
-                        match.status === 'LIVE' ? 'bg-emerald-500 text-white animate-pulse shadow-md shadow-emerald-200' : 
-                        match.status === 'PLAYER_UNAVAILABLE' ? 'bg-rose-500 text-white shadow-md shadow-rose-200' :
-                        match.status === 'NO-SHOW PENDING' ? 'bg-amber-500 text-white shadow-md shadow-amber-200' : 
-                        match.status === 'COMPLETED' ? 'bg-gray-200 text-gray-500' :
+                        displayStatus === 'LIVE' ? 'bg-emerald-500 text-white animate-pulse shadow-md shadow-emerald-200' : 
+                        displayStatus === 'PLAYER_UNAVAILABLE' ? 'bg-rose-500 text-white shadow-md shadow-rose-200' :
+                        (displayStatus === 'READY' || displayStatus === 'PLAYER_CONFIRMED') ? 'bg-emerald-500 text-white shadow-md shadow-emerald-200' : 
+                        displayStatus === 'NO-SHOW PENDING' ? 'bg-amber-500 text-white shadow-md shadow-amber-200' : 
+                        displayStatus === 'COMPLETED' ? 'bg-gray-200 text-gray-500' :
                         'bg-indigo-100 text-indigo-700'
                       }`}>
-                        {match.status}
+                        {(displayStatus === 'READY' || displayStatus === 'PLAYER_CONFIRMED') ? 'Match Ready' : displayStatus === 'PLAYER_UNAVAILABLE' ? 'Player Unavailable' : match.status}
                       </span>
                       <span className="text-xs font-black text-gray-400 uppercase tracking-widest bg-gray-50 px-3 py-1.5 rounded-xl">{match.sport} • {match.phase}</span>
                     </div>
@@ -380,8 +452,8 @@ export default function MatchesPage() {
                   
                   <div className="flex flex-col sm:flex-row items-center gap-4 sm:gap-6 w-full">
                     <div className="flex-1 bg-gradient-to-br from-blue-50 to-white border-2 border-blue-50 p-4 rounded-2xl w-full text-center sm:text-right">
-                      <div className="font-black text-blue-900 text-xl">{match.team1_p1?.name}</div>
-                      {match.team1_p2 && <div className="font-black text-blue-900 text-xl">{match.team1_p2.name}</div>}
+                      <div className="font-black text-blue-900 text-xl flex justify-center sm:justify-end items-center">{match.team1_p1?.name}{renderPlayerStatus(match.team1_p1)}</div>
+                      {match.team1_p2 && <div className="font-black text-blue-900 text-xl flex justify-center sm:justify-end items-center">{match.team1_p2.name}{renderPlayerStatus(match.team1_p2)}</div>}
                     </div>
                     
                     <div className="shrink-0 bg-gradient-to-br from-indigo-500 to-purple-600 text-white w-10 h-10 rounded-full flex items-center justify-center font-black text-xs shadow-lg shadow-indigo-200 z-10 border-4 border-white">
@@ -389,8 +461,8 @@ export default function MatchesPage() {
                     </div>
                     
                     <div className="flex-1 bg-gradient-to-bl from-rose-50 to-white border-2 border-rose-50 p-4 rounded-2xl w-full text-center sm:text-left">
-                      <div className="font-black text-rose-900 text-xl">{match.team2_p1?.name}</div>
-                      {match.team2_p2 && <div className="font-black text-rose-900 text-xl">{match.team2_p2.name}</div>}
+                      <div className="font-black text-rose-900 text-xl flex justify-center sm:justify-start items-center">{match.team2_p1?.name}{renderPlayerStatus(match.team2_p1)}</div>
+                      {match.team2_p2 && <div className="font-black text-rose-900 text-xl flex justify-center sm:justify-start items-center">{match.team2_p2.name}{renderPlayerStatus(match.team2_p2)}</div>}
                     </div>
                   </div>
                   
@@ -434,30 +506,29 @@ export default function MatchesPage() {
                   </div>
                 )}
               </div>
-            ))
+            )})
           )}
         </div>
 
         <div className="space-y-6">
           <h2 className="text-xl font-black text-gray-900 dark:text-white uppercase tracking-widest flex items-center gap-2">Attention</h2>
-          {matches.filter(m => m.status === 'NO-SHOW PENDING' || m.status === 'PLAYER_UNAVAILABLE').length === 0 ? (
+          {activeAlerts.length === 0 ? (
              <div className="p-10 text-sm font-bold text-gray-400 border-2 rounded-3xl border-dashed border-gray-200 bg-gray-50/50 text-center">No active alerts.</div>
           ) : (
-            matches.filter(m => m.status === 'NO-SHOW PENDING' || m.status === 'PLAYER_UNAVAILABLE').map(m => (
-              <div key={`alert-${m.id}`} className={`${m.status === 'PLAYER_UNAVAILABLE' ? 'bg-gradient-to-br from-rose-500 to-red-600 border-rose-600 text-white shadow-rose-200' : 'bg-gradient-to-br from-amber-400 to-orange-500 border-amber-500 text-white shadow-amber-200'} border rounded-3xl p-6 shadow-xl`}>
+            activeAlerts.map(alert => (
+              <div key={alert.id} className={`${
+                alert.type === 'danger' ? 'bg-gradient-to-br from-rose-500 to-red-600 border-rose-600 text-white shadow-rose-200' : 
+                alert.type === 'warning' ? 'bg-gradient-to-br from-amber-400 to-orange-500 border-amber-500 text-white shadow-amber-200' :
+                alert.type === 'success' ? 'bg-gradient-to-br from-emerald-500 to-teal-600 border-emerald-600 text-white shadow-emerald-200' :
+                'bg-gradient-to-br from-blue-500 to-indigo-600 border-blue-600 text-white shadow-blue-200'
+              } border rounded-3xl p-6 shadow-xl`}>
                 <div className="flex gap-4 items-start">
                   <div className="p-3 rounded-2xl bg-white/20 backdrop-blur-sm shrink-0">
-                    <AlertTriangle className="w-6 h-6 text-white" />
+                    {alert.type === 'success' ? <CheckCircle2 className="w-6 h-6 text-white" /> : <AlertTriangle className="w-6 h-6 text-white" />}
                   </div>
                   <div>
-                    <h3 className="font-black text-base tracking-wide">
-                      {m.status === 'PLAYER_UNAVAILABLE' ? 'Match Rejected' : 'Walkover Required'}
-                    </h3>
-                    <p className="text-sm font-medium mt-2 leading-relaxed text-white/90">
-                      {m.status === 'PLAYER_UNAVAILABLE' 
-                        ? `A player for match at ${m.playing_area} just clicked "I'M UNAVAILABLE". Please manually delete or walkover.` 
-                        : `Match at ${m.playing_area} reached no-show limit. Confirm walkover or delete.`}
-                    </p>
+                    <h3 className="font-black text-base tracking-wide">{alert.title}</h3>
+                    <p className="text-sm font-medium mt-2 leading-relaxed text-white/90">{alert.message}</p>
                   </div>
                 </div>
               </div>

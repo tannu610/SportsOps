@@ -10,6 +10,8 @@ type PlayerRecord = {
   dbId?: string; // DB UUID
   name: string;
   sport: string;
+  category: string;
+  round: string;
   status: string;
   checkIn: string; // ISO string or "-"
 };
@@ -61,6 +63,8 @@ export default function PlayersPage() {
             dbId: p.id,
             name: p.name,
             sport: p.sport,
+            category: p.category || 'NA',
+            round: p.current_round ? `Round ${p.current_round}` : 'Round 1',
             status: p.status,
             checkIn: p.check_in_time || "-"
           })));
@@ -97,21 +101,22 @@ export default function PlayersPage() {
         const validRecords: any[] = [];
         
         data.forEach((row, index) => {
-          const empId = row['Employee ID'] || row['Employee Id'] || row['employee_id'];
+          const empId = String(row['Employee ID'] || row['Employee Id'] || row['employee_id'] || '').trim();
           const name = row['Name'] || row['name'];
           const sport = row['Sport'] || row['sport'];
+          const category = row['Category'] || row['category'] || 'NA';
           const contact = row['Contact'] || row['Mobile'] || row['Phone'];
 
           if (!empId) errors.push(`Row ${index + 2}: Missing Employee ID`);
           else if (!name) errors.push(`Row ${index + 2}: Missing Player Name (${empId})`);
           else if (!sport) errors.push(`Row ${index + 2}: Missing Sport for ${name}`);
           else {
-            if (validRecords.some(r => r.empId === empId)) {
-              errors.push(`Row ${index + 2}: Duplicate Employee ID (${empId}) in file`);
-            } else if (players.some(p => p.id === empId)) {
-              errors.push(`Row ${index + 2}: Employee ID (${empId}) already exists in the system`);
+            if (validRecords.some(r => r.empId === empId && r.sport === sport && r.category === category)) {
+              errors.push(`Row ${index + 2}: Duplicate Employee ID (${empId}) for sport ${sport} - ${category} in file`);
+            } else if (players.some(p => p.id === empId && p.sport === sport && p.category === category)) {
+              errors.push(`Row ${index + 2}: Employee ID (${empId}) already exists for sport ${sport} - ${category} in the system`);
             } else {
-              validRecords.push({ empId, name, sport, contact });
+              validRecords.push({ empId, name, sport, category, contact });
             }
           }
         });
@@ -132,6 +137,8 @@ export default function PlayersPage() {
       employee_id: r.empId,
       name: r.name,
       sport: r.sport,
+      category: r.category,
+      current_round: 1,
       contact_info: r.contact ? String(r.contact) : null,
       status: 'REGISTERED'
     }));
@@ -145,7 +152,7 @@ export default function PlayersPage() {
     
     if (insertedData) {
       const newPlayers = insertedData.map(p => ({
-        id: p.employee_id, dbId: p.id, name: p.name, sport: p.sport, status: p.status, checkIn: p.check_in_time || "-"
+        id: p.employee_id, dbId: p.id, name: p.name, sport: p.sport, category: p.category || 'NA', round: p.current_round ? `Round ${p.current_round}` : 'Round 1', status: p.status, checkIn: p.check_in_time || "-"
       }));
       setPlayers([...newPlayers, ...players]);
     }
@@ -270,7 +277,7 @@ export default function PlayersPage() {
               </thead>
               <tbody className="divide-y divide-gray-200 dark:divide-zinc-800">
                 {filteredPlayers.map((player) => (
-                  <tr key={player.id} className="hover:bg-gray-50 dark:hover:bg-zinc-900/50">
+                  <tr key={player.dbId || player.id} className="hover:bg-gray-50 dark:hover:bg-zinc-900/50">
                     <td className="px-4 py-3 font-medium">{player.id}</td>
                     <td className="px-4 py-3">{player.name}</td>
                     <td className="px-4 py-3">{player.sport}</td>
@@ -281,7 +288,7 @@ export default function PlayersPage() {
                           const newStatus = e.target.value;
                           const { error } = await supabase.from('players').update({ status: newStatus }).eq('id', player.dbId);
                           if (!error) {
-                            setPlayers(players.map(p => p.id === player.id ? { ...p, status: newStatus } : p));
+                            setPlayers(players.map(p => p.dbId === player.dbId ? { ...p, status: newStatus } : p));
                           } else {
                             alert("Override failed: " + error.message);
                           }

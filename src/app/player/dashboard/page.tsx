@@ -91,13 +91,40 @@ function DashboardContent() {
         .limit(1);
         
       if (mData && mData.length > 0) {
-        setNextMatch(mData[0]);
+        setNextMatch((prevMatch: any) => {
+          if (prevMatch && prevMatch.id !== mData[0].id) {
+            setHasAcknowledged(false);
+            setResponseType(null);
+          }
+          return mData[0];
+        });
+      } else {
+        setNextMatch(null);
+        setHasAcknowledged(false);
+        setResponseType(null);
       }
       
       setIsLoading(false);
     }
     
     loadDashboard();
+    
+    // Set up real-time subscription for automatic updates without refresh
+    const channel = supabase
+      .channel('player-dashboard-changes')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'matches' }, () => {
+        loadDashboard();
+      })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'players' }, (payload) => {
+        if (payload.new && (payload.new as any).id === playerId) {
+          loadDashboard();
+        }
+      })
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
   }, [playerId, supabase]);
 
   const requestNotifications = async () => {
