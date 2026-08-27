@@ -1,11 +1,11 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, Suspense } from "react";
 import { useSearchParams } from "next/navigation";
 import { Bell, MapPin, Clock, CalendarDays, CheckCircle2, XCircle, Trophy } from "lucide-react";
 import { createClient } from "@/utils/supabase/client";
 
-export default function PlayerDashboard() {
+function DashboardContent() {
   const searchParams = useSearchParams();
   const playerId = searchParams.get("id");
   
@@ -280,5 +280,13 @@ function TrophyIcon(props: React.SVGProps<SVGSVGElement>) {
       <path d="M14 14.66V17c0 .55.47.98.97 1.21C16.15 18.75 17 20.24 17 22" />
       <path d="M18 2H6v7a6 6 0 0 0 12 0V2Z" />
     </svg>
+  );
+}
+
+export default function PlayerDashboard() {
+  return (
+    <Suspense fallback={<div className="p-8 text-center text-gray-500">Loading dashboard...</div>}>
+      <DashboardContent />
+    </Suspense>
   );
 }

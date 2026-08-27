@@ -1,4 +1,6 @@
-declare const self: ServiceWorkerGlobalScope
+/// <reference lib="webworker" />
+export default null;
+declare let self: ServiceWorkerGlobalScope;
 
 self.addEventListener('push', (event) => {
   const data = event.data?.json() ?? { title: 'New Notification', body: 'You have a new update.' }
