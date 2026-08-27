@@ -19,9 +19,37 @@ function DashboardContent() {
 
   const supabase = createClient();
 
+  const registerAndSaveSubscription = async () => {
+    try {
+      const registration = await navigator.serviceWorker.ready;
+      const vapidPublicKey = process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY;
+      
+      if (!vapidPublicKey) return;
+
+      const subscription = await registration.pushManager.subscribe({
+        userVisibleOnly: true,
+        applicationServerKey: urlBase64ToUint8Array(vapidPublicKey),
+      });
+
+      await fetch('/api/push/subscribe', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ subscription, playerId })
+      });
+      return true;
+    } catch (error) {
+      console.error("Error subscribing:", error);
+      return false;
+    }
+  };
+
   useEffect(() => {
     if ("Notification" in window) {
       setNotificationStatus(Notification.permission);
+      // If already granted, automatically ensure the subscription is saved to the DB
+      if (Notification.permission === 'granted' && playerId) {
+        registerAndSaveSubscription();
+      }
     }
     
     async function loadDashboard() {
@@ -63,30 +91,8 @@ function DashboardContent() {
       setNotificationStatus(permission);
       
       if (permission === 'granted') {
-        try {
-          const registration = await navigator.serviceWorker.ready;
-          const vapidPublicKey = process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY;
-          
-          if (!vapidPublicKey) {
-            console.error("VAPID public key not found");
-            return;
-          }
-
-          const subscription = await registration.pushManager.subscribe({
-            userVisibleOnly: true,
-            applicationServerKey: urlBase64ToUint8Array(vapidPublicKey),
-          });
-
-          await fetch('/api/push/subscribe', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ subscription, playerId })
-          });
-
-          alert("Notifications enabled! You will be alerted when your match is called.");
-        } catch (error) {
-          console.error("Error subscribing to push notifications:", error);
-        }
+        const success = await registerAndSaveSubscription();
+        if (success) alert("Notifications enabled! You will be alerted when your match is called.");
       }
     }
   };
