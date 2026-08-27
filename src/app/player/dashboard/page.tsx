@@ -16,29 +16,42 @@ function DashboardContent() {
   const [hasAcknowledged, setHasAcknowledged] = useState(false);
   const [responseType, setResponseType] = useState<"COMING" | "UNAVAILABLE" | null>(null);
   const [notificationStatus, setNotificationStatus] = useState<string>("default");
+  const [pushError, setPushError] = useState<string | null>(null);
 
   const supabase = createClient();
 
   const registerAndSaveSubscription = async () => {
     try {
+      if (!('serviceWorker' in navigator)) throw new Error("Service Worker not supported in this browser (are you in an embedded webview like WhatsApp?)");
+      
       const registration = await navigator.serviceWorker.ready;
+      if (!registration.pushManager) throw new Error("Push Manager not supported in this browser.");
+
       const vapidPublicKey = process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY;
       
-      if (!vapidPublicKey) return;
+      if (!vapidPublicKey) {
+        throw new Error("VAPID Public Key is missing from environment variables!");
+      }
 
       const subscription = await registration.pushManager.subscribe({
         userVisibleOnly: true,
         applicationServerKey: urlBase64ToUint8Array(vapidPublicKey),
       });
 
-      await fetch('/api/push/subscribe', {
+      const res = await fetch('/api/push/subscribe', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ subscription, playerId })
       });
+      
+      const data = await res.json();
+      if (data.error) throw new Error("API Error: " + data.error);
+
+      setPushError(null);
       return true;
-    } catch (error) {
+    } catch (error: any) {
       console.error("Error subscribing:", error);
+      setPushError(error.message || "Unknown error during push registration");
       return false;
     }
   };
@@ -164,7 +177,19 @@ function DashboardContent() {
   return (
     <div className="p-4 space-y-6 pb-20">
       
-      {notificationStatus !== 'granted' && (
+      {pushError && (
+        <div className="bg-red-50 dark:bg-red-900/30 border border-red-200 dark:border-red-800 rounded-xl p-4 flex gap-3 shadow-sm">
+          <XCircle className="w-5 h-5 text-red-600 shrink-0 mt-0.5" />
+          <div className="flex-1">
+            <h3 className="font-semibold text-red-900 dark:text-red-300 text-sm">Push Registration Failed</h3>
+            <p className="text-xs text-red-700 dark:text-red-400 mt-1 mb-2 font-mono break-all">
+              {pushError}
+            </p>
+          </div>
+        </div>
+      )}
+
+      {notificationStatus !== 'granted' && !pushError && (
         <div className="bg-blue-50 dark:bg-blue-900/30 border border-blue-200 dark:border-blue-800 rounded-xl p-4 flex gap-3 shadow-sm">
           <Bell className="w-5 h-5 text-blue-600 shrink-0 mt-0.5" />
           <div className="flex-1">
