@@ -24,7 +24,9 @@ function DashboardContent() {
     try {
       if (!('serviceWorker' in navigator)) throw new Error("Service Worker not supported in this browser (are you in an embedded webview like WhatsApp?)");
       
-      const registration = await navigator.serviceWorker.ready;
+      // Manually register the SW because next-pwa doesn't run in Turbopack
+      const registration = await navigator.serviceWorker.register('/sw.js');
+      await navigator.serviceWorker.ready;
       if (!registration.pushManager) throw new Error("Push Manager not supported in this browser.");
 
       const vapidPublicKey = process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY;

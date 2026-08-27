@@ -1,9 +1,5 @@
-/// <reference lib="webworker" />
-export default null;
-declare let self: ServiceWorkerGlobalScope;
-
 self.addEventListener('push', (event) => {
-  const data = event.data?.json() ?? { title: 'New Notification', body: 'You have a new update.' }
+  const data = event.data ? event.data.json() : { title: 'New Notification', body: 'You have a new update.' };
   
   event.waitUntil(
     self.registration.showNotification(data.title, {
@@ -12,12 +8,12 @@ self.addEventListener('push', (event) => {
       badge: '/badge.png',
       data: data.url
     })
-  )
-})
+  );
+});
 
 self.addEventListener('notificationclick', (event) => {
-  event.notification.close()
+  event.notification.close();
   if (event.notification.data) {
-    event.waitUntil(self.clients.openWindow(event.notification.data))
+    event.waitUntil(clients.openWindow(event.notification.data));
   }
-})
+});
