@@ -29,13 +29,10 @@
 ## ⏳ What is Pending / To-Do
 
 ### 1. Security & Authentication (Critical for Launch)
-- [ ] **Admin Route Protection:** Currently, anyone with the `/admin` URL can view the dashboard. We need to implement Supabase Auth (e.g., Email/Password) and a Next.js Middleware to ensure only authorized committee members can access `/admin`.
+- [x] **Admin Route Protection:** Implemented Supabase Auth and Next.js Middleware (`src/proxy.ts`) to ensure only authorized committee members can access `/admin`.
 
-### 2. Real-Time Data Synchronization
-- [ ] **Supabase Realtime Subscriptions:** Currently, the Admin Dashboard requires a manual page refresh (or initial load) to see if a player checked in. We need to wire up `supabase.channel()` so the UI instantly updates without refreshing the page.
+### 2. Native Web Push Notifications Implementation
+- [x] **Service Worker Setup (`next-pwa`):** Implemented custom service worker (`worker/index.ts`) and configured `@ducanh2912/next-pwa`. Set up `/api/push/subscribe` route to handle saving subscriptions and added VAPID keys.
 
-### 3. Native Web Push Notifications Implementation
-- [ ] **Service Worker Setup (`next-pwa`):** The Player Dashboard currently *asks* for notification permissions, but we need to install a background Service Worker and VAPID keys to actually *receive and display* those push alerts on their lock screen.
-
-### 4. Hosting & Deployment
+### 3. Hosting & Deployment
 - [ ] **Vercel Deployment:** Push the local codebase to a GitHub repository and connect it to Vercel so the application is publicly accessible via the internet on mobile devices.

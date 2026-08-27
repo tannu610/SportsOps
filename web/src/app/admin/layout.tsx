@@ -43,6 +43,18 @@ export default function AdminLayout({
             </li>
           </ul>
         </nav>
+        
+        <div className="p-4 border-t border-gray-200 dark:border-zinc-800">
+          <form action={async () => {
+            'use server';
+            const { logout } = await import('../login/actions');
+            await logout();
+          }}>
+            <button className="w-full flex items-center justify-center px-4 py-2 text-sm font-medium text-red-600 bg-red-50 hover:bg-red-100 rounded-md transition-colors">
+              Sign Out
+            </button>
+          </form>
+        </div>
       </aside>
 
       {/* Main Content */}

@@ -58,13 +58,49 @@ export default function PlayerDashboard() {
   }, [playerId, supabase]);
 
   const requestNotifications = async () => {
-    if ("Notification" in window) {
+    if ("Notification" in window && "serviceWorker" in navigator) {
       const permission = await Notification.requestPermission();
       setNotificationStatus(permission);
+      
       if (permission === 'granted') {
-        alert("Notifications enabled! You will be alerted when your match is called.");
+        try {
+          const registration = await navigator.serviceWorker.ready;
+          const vapidPublicKey = process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY;
+          
+          if (!vapidPublicKey) {
+            console.error("VAPID public key not found");
+            return;
+          }
+
+          const subscription = await registration.pushManager.subscribe({
+            userVisibleOnly: true,
+            applicationServerKey: urlBase64ToUint8Array(vapidPublicKey),
+          });
+
+          await fetch('/api/push/subscribe', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ subscription, playerId })
+          });
+
+          alert("Notifications enabled! You will be alerted when your match is called.");
+        } catch (error) {
+          console.error("Error subscribing to push notifications:", error);
+        }
       }
     }
+  };
+
+  // Helper function for VAPID key conversion
+  const urlBase64ToUint8Array = (base64String: string) => {
+    const padding = '='.repeat((4 - base64String.length % 4) % 4);
+    const base64 = (base64String + padding).replace(/\-/g, '+').replace(/_/g, '/');
+    const rawData = window.atob(base64);
+    const outputArray = new Uint8Array(rawData.length);
+    for (let i = 0; i < rawData.length; ++i) {
+      outputArray[i] = rawData.charCodeAt(i);
+    }
+    return outputArray;
   };
 
   const handleResponse = async (type: "COMING" | "UNAVAILABLE") => {
