@@ -3,10 +3,12 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "next dev",
+    "dev": "next dev --webpack",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "test": "node --test tests/duplicate_matches.test.mjs",
+    "test:db": "node scratch/check_db.mjs"
   },
   "dependencies": {
     "@supabase/ssr": "^0.12.5",

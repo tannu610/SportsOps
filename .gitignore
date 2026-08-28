@@ -1,6 +1,16 @@
-# See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
+# ==============================================================================
+# SENSITIVE & ENVIRONMENT FILES (NEVER COMMIT CREDENTIALS OR SECRETS)
+# ==============================================================================
+.env*
+!.env.example
+*.pem
+*.key
+*.cert
+*.crt
 
-# dependencies
+# ==============================================================================
+# DEPENDENCIES
+# ==============================================================================
 /node_modules
 /.pnp
 .pnp.*
@@ -10,32 +20,70 @@
 !.yarn/releases
 !.yarn/versions
 
-# testing
-/coverage
-
-# next.js
+# ==============================================================================
+# PRODUCTION BUILDS & CACHES
+# ==============================================================================
 /.next/
 /out/
-
-# production
 /build
+/dist
+/.turbo
+/.swc
+*.tsbuildinfo
+next-env.d.ts
 
-# misc
-.DS_Store
-*.pem
+# ==============================================================================
+# VERCEL & CLOUD DEPLOYMENTS
+# ==============================================================================
+.vercel
 
-# debug
+# ==============================================================================
+# LOGS & DEBUGGING
+# ==============================================================================
+logs/
+*.log
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 .pnpm-debug.log*
+lerna-debug.log*
 
-# env files (can opt-in for committing if needed)
-.env*
+# ==============================================================================
+# TESTING & COVERAGE
+# ==============================================================================
+/coverage
+*.lcov
+.nyc_output
 
-# vercel
-.vercel
+# ==============================================================================
+# IDE & EDITOR SETTINGS
+# ==============================================================================
+.vscode/*
+!.vscode/extensions.json
+.idea/
+*.sublime-project
+*.sublime-workspace
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+*~
 
-# typescript
-*.tsbuildinfo
-next-env.d.ts
+# ==============================================================================
+# OPERATING SYSTEM FILES
+# ==============================================================================
+.DS_Store
+.DS_Store?
+._*
+Thumbs.db
+ehthumbs.db
+[Dd]esktop.ini
+$RECYCLE.BIN/
+
+# ==============================================================================
+# LOCAL SCRATCH & AGENT ARTIFACTS
+# ==============================================================================
+/scratch
+.agents/
+skills-lock.json

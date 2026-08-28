@@ -32,6 +32,7 @@ type Match = {
 
 export default function MatchesPage() {
   const [isCreating, setIsCreating] = useState(false);
+  const [isSubmitting, setIsSubmitting] = useState(false);
   const [finishingMatch, setFinishingMatch] = useState<{ match: Match, isWalkover: boolean } | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [players, setPlayers] = useState<Player[]>([]);
@@ -121,7 +122,7 @@ export default function MatchesPage() {
 
   const handleCreateMatch = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!eventId || !t1p1 || !t2p1 || !matchTime) return;
+    if (isSubmitting || !eventId || !t1p1 || !t2p1 || !matchTime) return;
     
     const id_t1p1 = getPlayerIdByEmpId(t1p1, sport, category);
     const id_t2p1 = getPlayerIdByEmpId(t2p1, sport, category);
@@ -133,7 +134,7 @@ export default function MatchesPage() {
       return;
     }
 
-    const selectedIds = [id_t1p1, id_t2p1, id_t1p2, id_t2p2].filter(Boolean);
+    const selectedIds = [id_t1p1, id_t2p1, id_t1p2, id_t2p2].filter((id): id is string => Boolean(id));
     const uniqueIds = new Set(selectedIds);
     if (selectedIds.length !== uniqueIds.size) {
       alert("A player cannot be selected more than once in the same match.");
@@ -145,30 +146,105 @@ export default function MatchesPage() {
     date.setHours(Number(hours), Number(minutes), 0, 0);
     const matchTimestamp = date.toISOString();
 
-    const { data: newMatch, error } = await supabase.from('matches').insert([{
-      event_id: eventId, sport, category, phase, playing_area: area,
-      team1_p1_id: id_t1p1, team1_p2_id: id_t1p2, team2_p1_id: id_t2p1, team2_p2_id: id_t2p2,
-      scheduled_time: matchTimestamp, status: 'NOTIFIED'
-    }]).select().single();
+    // 1. Check for player schedule conflict at the same time across all courts
+    const hasPlayerConflict = matches.some(m => {
+      if (m.status === 'COMPLETED' || m.status === 'WALKOVER' || m.status === 'CANCELLED') return false;
+      if (m.scheduled_time !== matchTimestamp) return false;
+      const matchPlayerIds = [m.team1_p1?.id, m.team1_p2?.id, m.team2_p1?.id, m.team2_p2?.id].filter((id): id is string => Boolean(id));
+      return selectedIds.some(id => matchPlayerIds.includes(id));
+    });
 
-    if (error) return alert("Error creating match: " + error.message);
-    await supabase.rpc('call_players_for_match', { p_player_ids: selectedIds });
-    
-    // Automatically trigger push notifications for the created match
-    if (newMatch?.id) {
-      try {
-        await fetch('/api/push/notify', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ matchId: newMatch.id })
-        });
-      } catch (err) {
-        console.error("Failed to send automatic notification", err);
-      }
+    if (hasPlayerConflict) {
+      alert("Player conflict: one or more players already have a match scheduled at this time.");
+      return;
     }
 
-    setIsCreating(false);
-    setT1p1(""); setT2p1(""); setT1p2(""); setT2p2(""); setMatchTime("");
+    // 2. Check for court occupancy conflict at the same time
+    const hasCourtConflict = matches.some(m => {
+      if (m.status === 'COMPLETED' || m.status === 'WALKOVER' || m.status === 'CANCELLED') return false;
+      return m.playing_area === area && m.scheduled_time === matchTimestamp;
+    });
+
+    if (hasCourtConflict) {
+      alert(`Court conflict: ${area} is already occupied at this time.`);
+      return;
+    }
+
+    // 3. Client-side quick check against existing identical active matches in state
+    const isClientDuplicate = matches.some(m => {
+      if (m.status === 'COMPLETED' || m.status === 'WALKOVER' || m.status === 'CANCELLED') return false;
+      if (m.sport !== sport || (m.category || 'NA') !== (category || 'NA') || (m.phase || 'Round 1') !== (phase || 'Round 1')) return false;
+      if (m.playing_area !== area || m.scheduled_time !== matchTimestamp) return false;
+
+      const existingT1 = [m.team1_p1?.id, m.team1_p2?.id || ''].sort().join(':');
+      const existingT2 = [m.team2_p1?.id, m.team2_p2?.id || ''].sort().join(':');
+      const existingTeams = [existingT1, existingT2].sort().join('__VS__');
+
+      const reqT1 = [id_t1p1, id_t1p2 || ''].sort().join(':');
+      const reqT2 = [id_t2p1, id_t2p2 || ''].sort().join(':');
+      const reqTeams = [reqT1, reqT2].sort().join('__VS__');
+
+      return existingTeams === reqTeams;
+    });
+
+    if (isClientDuplicate) {
+      alert("This match already exists.");
+      return;
+    }
+
+    setIsSubmitting(true);
+    try {
+      const res = await fetch('/api/matches/create', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          eventId,
+          sport,
+          category,
+          phase,
+          playingArea: area,
+          scheduledTime: matchTimestamp,
+          team1_p1_id: id_t1p1,
+          team1_p2_id: id_t1p2,
+          team2_p1_id: id_t2p1,
+          team2_p2_id: id_t2p2,
+        })
+      });
+
+      const result = await res.json();
+      if (!res.ok) {
+        if (result.error?.includes('Player conflict')) {
+          alert("Player conflict: one or more players already have a match scheduled at this time.");
+          return;
+        }
+        if (result.error === 'This match already exists.' || result.error?.includes('unique') || result.error?.includes('duplicate')) {
+          alert("This match already exists.");
+          return;
+        }
+        alert("Error creating match: " + (result.error || 'Failed to create match'));
+        return;
+      }
+
+      const newMatch = result.match;
+
+      // Automatically trigger push notifications for the created match
+      if (newMatch?.id) {
+        try {
+          await fetch('/api/push/notify', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ matchId: newMatch.id })
+          });
+        } catch (err) {
+          console.error("Failed to send automatic notification", err);
+        }
+      }
+
+      setIsCreating(false);
+      setT1p1(""); setT2p1(""); setT1p2(""); setT2p2(""); setMatchTime("");
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
   const deleteMatch = async (matchId: string) => {
@@ -393,7 +469,9 @@ export default function MatchesPage() {
 
               <div className="pt-8 flex justify-end gap-4 border-t border-gray-100">
                 <button type="button" onClick={() => setIsCreating(false)} className="px-8 py-4 bg-gray-50 text-gray-500 rounded-2xl text-sm font-black tracking-widest uppercase hover:bg-gray-100 transition-colors">Cancel</button>
-                <button type="submit" className="px-8 py-4 bg-indigo-600 text-white rounded-2xl text-sm font-black tracking-widest uppercase shadow-xl shadow-indigo-200 hover:bg-indigo-700 hover:shadow-indigo-300 transition-all">Create & Notify</button>
+                <button type="submit" disabled={isSubmitting} className="px-8 py-4 bg-indigo-600 text-white rounded-2xl text-sm font-black tracking-widest uppercase shadow-xl shadow-indigo-200 hover:bg-indigo-700 hover:shadow-indigo-300 transition-all disabled:cursor-not-allowed disabled:opacity-60">
+                  {isSubmitting ? 'Creating…' : 'Create & Notify'}
+                </button>
               </div>
             </form>
           </div>
@@ -432,7 +510,7 @@ export default function MatchesPage() {
 
                 <div className="p-6 flex-1 space-y-6">
                   <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-3">
+                    <div className="flex flex-wrap items-center gap-2">
                       <span className={`px-4 py-1.5 rounded-xl text-[10px] font-black uppercase tracking-widest ${
                         displayStatus === 'LIVE' ? 'bg-emerald-500 text-white animate-pulse shadow-md shadow-emerald-200' : 
                         displayStatus === 'PLAYER_UNAVAILABLE' ? 'bg-rose-500 text-white shadow-md shadow-rose-200' :
@@ -443,7 +521,17 @@ export default function MatchesPage() {
                       }`}>
                         {(displayStatus === 'READY' || displayStatus === 'PLAYER_CONFIRMED') ? 'Match Ready' : displayStatus === 'PLAYER_UNAVAILABLE' ? 'Player Unavailable' : match.status}
                       </span>
-                      <span className="text-xs font-black text-gray-400 uppercase tracking-widest bg-gray-50 px-3 py-1.5 rounded-xl">{match.sport} • {match.phase}</span>
+                      <span className="text-xs font-black text-gray-600 dark:text-gray-400 uppercase tracking-widest bg-gray-100 dark:bg-zinc-800 px-3 py-1.5 rounded-xl">
+                        {match.sport}
+                      </span>
+                      {match.category && match.category !== 'NA' && (
+                        <span className="text-xs font-black text-indigo-600 dark:text-indigo-400 uppercase tracking-widest bg-indigo-50 dark:bg-indigo-950/40 px-3 py-1.5 rounded-xl">
+                          {match.category}
+                        </span>
+                      )}
+                      <span className="text-xs font-black text-gray-600 dark:text-gray-400 uppercase tracking-widest bg-gray-100 dark:bg-zinc-800 px-3 py-1.5 rounded-xl">
+                        {match.phase}
+                      </span>
                     </div>
                     {match.status !== 'COMPLETED' && (
                       <button onClick={() => deleteMatch(match.id)} className="text-gray-300 hover:text-rose-500 transition-colors p-2 hover:bg-rose-50 rounded-full" title="Delete & Rollback Players"><Trash2 className="w-5 h-5" /></button>
@@ -539,4 +627,3 @@ export default function MatchesPage() {
     </div>
   );
 }
-
