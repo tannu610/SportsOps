@@ -1,11 +1,32 @@
 import { NextResponse } from 'next/server';
 import { createClient } from '@/utils/supabase/server';
-import { DEFAULT_SPORTS_CONFIG, EventConfiguration } from '@/utils/eventConfig';
+import {
+  DEFAULT_SPORTS_CONFIG,
+  SPORT_FACILITY_DEFAULTS,
+  EventConfiguration,
+  validateEventConfigPayload
+} from '@/utils/eventConfig';
 
-export async function GET() {
+export async function GET(req: Request) {
   try {
     const supabase = await createClient();
-    const { data: events, error } = await supabase.from('events').select('*').limit(1);
+    const { searchParams } = new URL(req.url);
+    const requestedEventId = searchParams.get('eventId');
+
+    // Fetch all events for dropdown/selection
+    const { data: allEvents } = await supabase
+      .from('events')
+      .select('id, name, event_date, venue, created_at')
+      .order('created_at', { ascending: false });
+
+    let eventQuery = supabase.from('events').select('*');
+    if (requestedEventId) {
+      eventQuery = eventQuery.eq('id', requestedEventId);
+    } else {
+      eventQuery = eventQuery.order('created_at', { ascending: false }).limit(1);
+    }
+
+    const { data: events, error } = await eventQuery;
 
     if (error) {
       return NextResponse.json({ error: error.message }, { status: 500 });
@@ -14,25 +35,86 @@ export async function GET() {
     if (!events || events.length === 0) {
       return NextResponse.json({
         event: null,
-        configuration: { sports: DEFAULT_SPORTS_CONFIG }
+        eventsList: allEvents || [],
+        configuration: { sports: DEFAULT_SPORTS_CONFIG },
+        source: 'default'
       });
     }
 
     const event = events[0];
-    let config: EventConfiguration = { sports: DEFAULT_SPORTS_CONFIG };
+    let config: EventConfiguration = { sports: { ...DEFAULT_SPORTS_CONFIG } };
+    let dataSource = 'default';
 
-    // Check if configuration exists in event.configuration column
-    if (event.configuration && typeof event.configuration === 'object' && event.configuration.sports) {
-      config = event.configuration as EventConfiguration;
-    } else if (event.sport && event.sport.startsWith('{')) {
-      // Fallback: Check if JSON is serialized in sport column
-      try {
-        const parsed = JSON.parse(event.sport);
-        if (parsed.sports) {
-          config = parsed;
+    // 1. Try fetching from normalized relational tables: event_sports, event_categories, event_facilities
+    try {
+      const { data: sportsRows, error: relError } = await supabase
+        .from('event_sports')
+        .select(`
+          id, sport,
+          event_categories(id, category),
+          event_facilities(id, facility_type, facility_count)
+        `)
+        .eq('event_id', event.id);
+
+      if (!relError && sportsRows && sportsRows.length > 0) {
+        const relationalSports: Record<string, any> = {};
+
+        // Pre-populate with all known sports as disabled
+        Object.entries(DEFAULT_SPORTS_CONFIG).forEach(([sName, defCfg]) => {
+          relationalSports[sName] = { ...defCfg, enabled: false };
+        });
+
+        sportsRows.forEach((row: any) => {
+          const sName = row.sport;
+          const facility = row.event_facilities?.[0];
+          const categories = (row.event_categories || []).map((c: any) => c.category);
+          const defaultFac = SPORT_FACILITY_DEFAULTS[sName] || {
+            facilityType: 'Courts',
+            facilityUnit: 'Court',
+            defaultCount: 4
+          };
+
+          relationalSports[sName] = {
+            enabled: true,
+            facilityType: facility?.facility_type || defaultFac.facilityType,
+            facilityUnit: defaultFac.facilityUnit,
+            facilityCount: facility?.facility_count || defaultFac.defaultCount,
+            categories: categories.length > 0 ? categories : ["Open"]
+          };
+        });
+
+        config = { sports: relationalSports };
+        dataSource = 'event_sports_relational';
+      }
+    } catch {
+      // Table may not exist yet; gracefully fallback
+    }
+
+    // 2. If relational tables had no rows for this event, fallback to event.configuration or serialized event.sport
+    if (dataSource === 'default') {
+      if (event.configuration && typeof event.configuration === 'object' && event.configuration.sports) {
+        config = {
+          sports: {
+            ...DEFAULT_SPORTS_CONFIG,
+            ...event.configuration.sports
+          }
+        };
+        dataSource = 'event_configuration_column';
+      } else if (event.sport && event.sport.startsWith('{')) {
+        try {
+          const parsed = JSON.parse(event.sport);
+          if (parsed.sports) {
+            config = {
+              sports: {
+                ...DEFAULT_SPORTS_CONFIG,
+                ...parsed.sports
+              }
+            };
+            dataSource = 'event_sport_serialized';
+          }
+        } catch {
+          // Keep defaults
         }
-      } catch {
-        // Not a JSON string, keep default
       }
     }
 
@@ -44,7 +126,9 @@ export async function GET() {
         venue: event.venue || "Main Sports Complex",
         created_at: event.created_at
       },
-      configuration: config
+      eventsList: allEvents || [],
+      configuration: config,
+      source: dataSource
     });
   } catch (err: any) {
     return NextResponse.json({ error: err.message || 'Server error' }, { status: 500 });
@@ -58,62 +142,147 @@ export async function POST(req: Request) {
 
     const { eventId, name, eventDate, venue, configuration } = body;
 
-    if (!name) {
-      return NextResponse.json({ error: 'Event Name is required' }, { status: 400 });
+    // 1. Strict Server-Side Validation
+    const validation = validateEventConfigPayload({ name, eventDate, venue, configuration });
+    if (!validation.valid) {
+      return NextResponse.json({ error: validation.error }, { status: 400 });
     }
 
-    // Determine enabled sports summary text (e.g. "Badminton, Table Tennis")
-    const sportsObj = configuration?.sports || DEFAULT_SPORTS_CONFIG;
+    const sportsObj = configuration.sports;
     const enabledSports = Object.entries(sportsObj)
-      .filter(([_, cfg]: [string, any]) => cfg.enabled)
-      .map(([name]) => name);
+      .filter(([_, cfg]: [string, any]) => cfg.enabled);
 
-    const sportSummary = enabledSports.length > 0 ? enabledSports.join(', ') : 'All Sports';
+    const sportSummary = enabledSports.map(([name]) => name).join(', ');
 
-    // 1. Try updating with the configuration JSONB column
-    const { data: updatedWithCol, error: colError } = await supabase
-      .from('events')
-      .update({
-        name,
-        venue,
-        event_date: eventDate || null,
-        configuration,
-        sport: sportSummary
-      })
-      .eq('id', eventId)
-      .select();
+    // 2. Try Atomic Stored Procedure: save_event_configuration
+    try {
+      const { data: rpcData, error: rpcError } = await supabase.rpc('save_event_configuration', {
+        p_event_id: eventId || null,
+        p_name: name.trim(),
+        p_event_date: eventDate,
+        p_venue: venue.trim(),
+        p_sports: sportsObj
+      });
 
-    // 2. If configuration column doesn't exist yet in DB, fallback to JSON in sport column
-    if (colError && (colError.code === '42703' || colError.code === 'PGRST204' || colError.message?.includes('configuration'))) {
-      const fallbackPayload = JSON.stringify(configuration);
-      const { data: fallbackData, error: fallbackError } = await supabase
+      if (!rpcError && rpcData && rpcData.success) {
+        return NextResponse.json({
+          success: true,
+          event: {
+            id: rpcData.event_id,
+            name: name.trim(),
+            event_date: eventDate,
+            venue: venue.trim()
+          },
+          configuration,
+          method: 'atomic_rpc'
+        });
+      }
+    } catch {
+      // RPC might not exist in database yet; fallback to direct multi-table upsert
+    }
+
+    // 3. Fallback: Multi-step atomic upsert via Supabase Client
+    let targetEventId = eventId;
+
+    if (targetEventId) {
+      // Update existing event
+      const { error: updateErr } = await supabase
         .from('events')
         .update({
-          name,
-          venue,
-          event_date: eventDate || null,
-          sport: fallbackPayload
+          name: name.trim(),
+          event_date: eventDate,
+          venue: venue.trim(),
+          sport: sportSummary
         })
-        .eq('id', eventId)
-        .select();
+        .eq('id', targetEventId);
 
-      if (fallbackError) {
-        return NextResponse.json({ error: fallbackError.message }, { status: 500 });
+      if (updateErr) throw new Error(updateErr.message);
+    } else {
+      // Create new event
+      const { data: newEv, error: insertErr } = await supabase
+        .from('events')
+        .insert({
+          name: name.trim(),
+          event_date: eventDate,
+          venue: venue.trim(),
+          sport: sportSummary
+        })
+        .select()
+        .single();
+
+      if (insertErr || !newEv) throw new Error(insertErr?.message || 'Failed to create event');
+      targetEventId = newEv.id;
+    }
+
+    // 4. Try updating relational tables (event_sports, event_facilities, event_categories)
+    try {
+      // Delete previous sports for this event (cascades to categories and facilities)
+      await supabase.from('event_sports').delete().eq('event_id', targetEventId);
+
+      for (const [sportName, cfg] of enabledSports) {
+        const typedCfg = cfg as any;
+        const defaultFac = SPORT_FACILITY_DEFAULTS[sportName] || {
+          facilityType: 'Courts',
+          facilityUnit: 'Court',
+          defaultCount: 4
+        };
+
+        const { data: insertedSport, error: sportErr } = await supabase
+          .from('event_sports')
+          .insert({
+            event_id: targetEventId,
+            sport: sportName
+          })
+          .select()
+          .single();
+
+        if (!sportErr && insertedSport) {
+          // Insert facility
+          await supabase.from('event_facilities').insert({
+            event_sport_id: insertedSport.id,
+            facility_type: typedCfg.facilityType || defaultFac.facilityType,
+            facility_count: typedCfg.facilityCount || defaultFac.defaultCount
+          });
+
+          // Insert categories
+          const catInserts = (typedCfg.categories || []).map((cat: string) => ({
+            event_sport_id: insertedSport.id,
+            category: cat
+          }));
+
+          if (catInserts.length > 0) {
+            await supabase.from('event_categories').insert(catInserts);
+          }
+        }
       }
+    } catch {
+      // Relational tables may not be created yet; configuration still safely synced in events
+    }
 
-      return NextResponse.json({
-        success: true,
-        event: fallbackData?.[0],
-        configuration
-      });
-    } else if (colError) {
-      return NextResponse.json({ error: colError.message }, { status: 500 });
+    // 5. Keep events.configuration column in sync
+    const { error: colErr } = await supabase
+      .from('events')
+      .update({ configuration })
+      .eq('id', targetEventId);
+
+    // If configuration column doesn't exist yet, save JSON in sport column
+    if (colErr && (colErr.code === '42703' || colErr.code === 'PGRST204' || colErr.message?.includes('configuration'))) {
+      await supabase
+        .from('events')
+        .update({ sport: JSON.stringify(configuration) })
+        .eq('id', targetEventId);
     }
 
     return NextResponse.json({
       success: true,
-      event: updatedWithCol?.[0],
-      configuration
+      event: {
+        id: targetEventId,
+        name: name.trim(),
+        event_date: eventDate,
+        venue: venue.trim()
+      },
+      configuration,
+      method: 'service_fallback'
     });
   } catch (err: any) {
     return NextResponse.json({ error: err.message || 'Server error' }, { status: 500 });

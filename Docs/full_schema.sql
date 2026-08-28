@@ -36,6 +36,34 @@ CREATE TABLE IF NOT EXISTS events (
   created_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now())
 );
 
+-- 2.1.1 Event Sports Table
+CREATE TABLE IF NOT EXISTS event_sports (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  event_id UUID NOT NULL REFERENCES events(id) ON DELETE CASCADE,
+  sport TEXT NOT NULL,
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()),
+  CONSTRAINT uq_event_sport UNIQUE (event_id, sport)
+);
+
+-- 2.1.2 Event Categories Table
+CREATE TABLE IF NOT EXISTS event_categories (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  event_sport_id UUID NOT NULL REFERENCES event_sports(id) ON DELETE CASCADE,
+  category TEXT NOT NULL,
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()),
+  CONSTRAINT uq_event_sport_category UNIQUE (event_sport_id, category)
+);
+
+-- 2.1.3 Event Facilities Table
+CREATE TABLE IF NOT EXISTS event_facilities (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  event_sport_id UUID NOT NULL REFERENCES event_sports(id) ON DELETE CASCADE,
+  facility_type TEXT NOT NULL,
+  facility_count INTEGER NOT NULL CHECK (facility_count > 0),
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()),
+  CONSTRAINT uq_event_sport_facility UNIQUE (event_sport_id)
+);
+
 -- 2.2 Players Table
 CREATE TABLE IF NOT EXISTS players (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -392,6 +420,183 @@ BEFORE INSERT OR UPDATE OF scheduled_time, team1_p1_id, team1_p2_id, team2_p1_id
 ON matches
 FOR EACH ROW
 EXECUTE FUNCTION check_player_schedule_conflict();
+
+-- ==============================================================================
+-- 7.1 EVENT CONFIGURATION STORED PROCEDURE & POLICIES
+-- ==============================================================================
+
+CREATE INDEX IF NOT EXISTS idx_event_sports_event_id ON event_sports(event_id);
+CREATE INDEX IF NOT EXISTS idx_event_categories_sport_id ON event_categories(event_sport_id);
+CREATE INDEX IF NOT EXISTS idx_event_facilities_sport_id ON event_facilities(event_sport_id);
+
+ALTER TABLE event_sports ENABLE ROW LEVEL SECURITY;
+ALTER TABLE event_categories ENABLE ROW LEVEL SECURITY;
+ALTER TABLE event_facilities ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "Public read event_sports" ON event_sports;
+CREATE POLICY "Public read event_sports" ON event_sports FOR SELECT USING (true);
+
+DROP POLICY IF EXISTS "Public read event_categories" ON event_categories;
+CREATE POLICY "Public read event_categories" ON event_categories FOR SELECT USING (true);
+
+DROP POLICY IF EXISTS "Public read event_facilities" ON event_facilities;
+CREATE POLICY "Public read event_facilities" ON event_facilities FOR SELECT USING (true);
+
+DROP POLICY IF EXISTS "Service role full access event_sports" ON event_sports;
+CREATE POLICY "Service role full access event_sports" ON event_sports FOR ALL USING (true) WITH CHECK (true);
+
+DROP POLICY IF EXISTS "Service role full access event_categories" ON event_categories;
+CREATE POLICY "Service role full access event_categories" ON event_categories FOR ALL USING (true) WITH CHECK (true);
+
+DROP POLICY IF EXISTS "Service role full access event_facilities" ON event_facilities;
+CREATE POLICY "Service role full access event_facilities" ON event_facilities FOR ALL USING (true) WITH CHECK (true);
+
+ALTER TABLE event_sports REPLICA IDENTITY FULL;
+ALTER TABLE event_categories REPLICA IDENTITY FULL;
+ALTER TABLE event_facilities REPLICA IDENTITY FULL;
+
+DO $$
+BEGIN
+  BEGIN
+    ALTER PUBLICATION supabase_realtime ADD TABLE event_sports;
+  EXCEPTION WHEN duplicate_object THEN
+    NULL;
+  END;
+
+  BEGIN
+    ALTER PUBLICATION supabase_realtime ADD TABLE event_categories;
+  EXCEPTION WHEN duplicate_object THEN
+    NULL;
+  END;
+
+  BEGIN
+    ALTER PUBLICATION supabase_realtime ADD TABLE event_facilities;
+  EXCEPTION WHEN duplicate_object THEN
+    NULL;
+  END;
+END $$;
+
+CREATE OR REPLACE FUNCTION save_event_configuration(
+  p_event_id UUID,
+  p_name TEXT,
+  p_event_date DATE,
+  p_venue TEXT,
+  p_sports JSONB
+)
+RETURNS JSONB
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+DECLARE
+  v_event_id UUID;
+  v_sport_key TEXT;
+  v_sport_data JSONB;
+  v_sport_id UUID;
+  v_category TEXT;
+  v_facility_type TEXT;
+  v_facility_count INT;
+  v_enabled_count INT := 0;
+  v_summary_sports TEXT := '';
+BEGIN
+  IF p_name IS NULL OR trim(p_name) = '' THEN
+    RAISE EXCEPTION 'Event Name is required';
+  END IF;
+
+  IF p_event_date IS NULL THEN
+    RAISE EXCEPTION 'Event Date is required';
+  END IF;
+
+  IF p_venue IS NULL OR trim(p_venue) = '' THEN
+    RAISE EXCEPTION 'Venue is required';
+  END IF;
+
+  IF p_sports IS NULL OR p_sports = '{}'::jsonb THEN
+    RAISE EXCEPTION 'At least one sport is required';
+  END IF;
+
+  FOR v_sport_key, v_sport_data IN SELECT * FROM jsonb_each(p_sports)
+  LOOP
+    IF (v_sport_data->>'enabled')::boolean = true THEN
+      v_enabled_count := v_enabled_count + 1;
+      IF v_summary_sports = '' THEN
+        v_summary_sports := v_sport_key;
+      ELSE
+        v_summary_sports := v_summary_sports || ', ' || v_sport_key;
+      END IF;
+
+      v_facility_count := COALESCE((v_sport_data->>'facilityCount')::int, 0);
+      IF v_facility_count <= 0 THEN
+        RAISE EXCEPTION 'Facility count for % must be a positive integer', v_sport_key;
+      END IF;
+
+      IF jsonb_array_length(COALESCE(v_sport_data->'categories', '[]'::jsonb)) = 0 THEN
+        RAISE EXCEPTION 'At least one category is required for sport: %', v_sport_key;
+      END IF;
+    END IF;
+  END LOOP;
+
+  IF v_enabled_count = 0 THEN
+    RAISE EXCEPTION 'At least one sport must be selected and enabled';
+  END IF;
+
+  IF p_event_id IS NOT NULL AND EXISTS (SELECT 1 FROM events WHERE id = p_event_id) THEN
+    UPDATE events
+    SET name = trim(p_name),
+        event_date = p_event_date,
+        venue = trim(p_venue),
+        sport = v_summary_sports,
+        configuration = jsonb_build_object('sports', p_sports)
+    WHERE id = p_event_id
+    RETURNING id INTO v_event_id;
+  ELSE
+    INSERT INTO events (id, name, event_date, venue, sport, configuration)
+    VALUES (
+      COALESCE(p_event_id, gen_random_uuid()),
+      trim(p_name),
+      p_event_date,
+      trim(p_venue),
+      v_summary_sports,
+      jsonb_build_object('sports', p_sports)
+    )
+    RETURNING id INTO v_event_id;
+  END IF;
+
+  DELETE FROM event_sports WHERE event_id = v_event_id;
+
+  FOR v_sport_key, v_sport_data IN SELECT * FROM jsonb_each(p_sports)
+  LOOP
+    IF (v_sport_data->>'enabled')::boolean = true THEN
+      INSERT INTO event_sports (event_id, sport)
+      VALUES (v_event_id, v_sport_key)
+      RETURNING id INTO v_sport_id;
+
+      v_facility_type := COALESCE(v_sport_data->>'facilityType', 'Courts');
+      v_facility_count := (v_sport_data->>'facilityCount')::int;
+
+      INSERT INTO event_facilities (event_sport_id, facility_type, facility_count)
+      VALUES (v_sport_id, v_facility_type, v_facility_count);
+
+      FOR v_category IN SELECT jsonb_array_elements_text(v_sport_data->'categories')
+      LOOP
+        IF trim(v_category) <> '' THEN
+          INSERT INTO event_categories (event_sport_id, category)
+          VALUES (v_sport_id, trim(v_category))
+          ON CONFLICT (event_sport_id, category) DO NOTHING;
+        END IF;
+      END LOOP;
+    END IF;
+  END LOOP;
+
+  NOTIFY pgrst, 'reload schema';
+
+  RETURN jsonb_build_object(
+    'success', true,
+    'event_id', v_event_id,
+    'name', trim(p_name),
+    'sports_count', v_enabled_count
+  );
+END;
+$$;
 
 -- ==============================================================================
 -- 8. DEFAULT SEED EVENT

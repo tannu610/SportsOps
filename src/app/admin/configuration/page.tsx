@@ -13,21 +13,29 @@ import {
   MapPin,
   Calendar,
   Building,
-  Check
+  Check,
+  RefreshCw,
+  FolderPlus
 } from "lucide-react";
-import { SportConfig, EventConfiguration, DEFAULT_SPORTS_CONFIG } from "@/utils/eventConfig";
+import {
+  SportConfig,
+  SPORT_FACILITY_DEFAULTS,
+  DEFAULT_SPORTS_CONFIG,
+  validateEventConfigPayload
+} from "@/utils/eventConfig";
 
-const SPORT_FACILITY_DEFAULTS: Record<string, { facilityType: string; facilityUnit: string; defaultCount: number }> = {
-  "Badminton": { facilityType: "Courts", facilityUnit: "Court", defaultCount: 6 },
-  "Table Tennis": { facilityType: "Tables", facilityUnit: "Table", defaultCount: 4 },
-  "Cricket": { facilityType: "Grounds", facilityUnit: "Ground", defaultCount: 2 },
-  "Football": { facilityType: "Grounds", facilityUnit: "Ground", defaultCount: 2 },
-  "Volleyball": { facilityType: "Courts", facilityUnit: "Court", defaultCount: 2 },
-  "Other": { facilityType: "Playing Areas", facilityUnit: "Area", defaultCount: 3 }
-};
+interface EventListItem {
+  id: string;
+  name: string;
+  event_date: string;
+  venue: string;
+}
 
 export default function EventConfigurationPage() {
-  const [eventId, setEventId] = useState<string | null>(null);
+  const [eventsList, setEventsList] = useState<EventListItem[]>([]);
+  const [selectedEventId, setSelectedEventId] = useState<string | null>(null);
+  const [isCreatingNew, setIsCreatingNew] = useState(false);
+
   const [name, setName] = useState("");
   const [eventDate, setEventDate] = useState("");
   const [venue, setVenue] = useState("");
@@ -38,36 +46,66 @@ export default function EventConfigurationPage() {
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+  const [dataSource, setDataSource] = useState<string>('database');
+
+  async function loadConfig(targetId?: string | null) {
+    setIsLoading(true);
+    setMessage(null);
+    try {
+      const url = targetId ? `/api/admin/event/config?eventId=${targetId}` : '/api/admin/event/config';
+      const res = await fetch(url);
+      const data = await res.json();
+      
+      if (data.eventsList) {
+        setEventsList(data.eventsList);
+      }
+
+      if (data.event) {
+        setSelectedEventId(data.event.id);
+        setName(data.event.name || "");
+        setEventDate(data.event.event_date || "");
+        setVenue(data.event.venue || "");
+        setIsCreatingNew(false);
+      } else {
+        setIsCreatingNew(true);
+      }
+      
+      if (data.configuration?.sports) {
+        setSportsConfig({
+          ...DEFAULT_SPORTS_CONFIG,
+          ...data.configuration.sports
+        });
+      }
+
+      if (data.source) {
+        setDataSource(data.source);
+      }
+    } catch (err: any) {
+      setMessage({ type: 'error', text: 'Failed to load event configuration: ' + err.message });
+    } finally {
+      setIsLoading(false);
+    }
+  }
 
   useEffect(() => {
-    async function loadConfig() {
-      setIsLoading(true);
-      try {
-        const res = await fetch('/api/admin/event/config');
-        const data = await res.json();
-        
-        if (data.event) {
-          setEventId(data.event.id);
-          setName(data.event.name || "");
-          setEventDate(data.event.event_date || "");
-          setVenue(data.event.venue || "");
-        }
-        
-        if (data.configuration?.sports) {
-          setSportsConfig({
-            ...DEFAULT_SPORTS_CONFIG,
-            ...data.configuration.sports
-          });
-        }
-      } catch (err: any) {
-        setMessage({ type: 'error', text: 'Failed to load configuration: ' + err.message });
-      } finally {
-        setIsLoading(false);
-      }
-    }
-
     loadConfig();
   }, []);
+
+  const handleSelectEvent = (evId: string) => {
+    if (evId === 'NEW') {
+      setIsCreatingNew(true);
+      setSelectedEventId(null);
+      setName("");
+      setEventDate("");
+      setVenue("");
+      setSportsConfig(DEFAULT_SPORTS_CONFIG);
+      setMessage(null);
+    } else {
+      setIsCreatingNew(false);
+      setSelectedEventId(evId);
+      loadConfig(evId);
+    }
+  };
 
   const handleToggleSport = (sportName: string) => {
     setSportsConfig((prev) => {
@@ -97,24 +135,6 @@ export default function EventConfigurationPage() {
         facilityCount: Math.max(1, count)
       }
     }));
-  };
-
-  const handleToggleCategory = (sportName: string, category: string) => {
-    setSportsConfig((prev) => {
-      const currentCategories = prev[sportName]?.categories || [];
-      const exists = currentCategories.includes(category);
-      const updatedCategories = exists
-        ? currentCategories.filter((c) => c !== category)
-        : [...currentCategories, category];
-
-      return {
-        ...prev,
-        [sportName]: {
-          ...prev[sportName],
-          categories: updatedCategories
-        }
-      };
-    });
   };
 
   const handleAddCategory = (sportName: string) => {
@@ -149,22 +169,18 @@ export default function EventConfigurationPage() {
 
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!name.trim()) {
-      setMessage({ type: 'error', text: 'Please enter an Event Name.' });
-      return;
-    }
 
-    const enabledSports = Object.entries(sportsConfig).filter(([_, cfg]) => cfg.enabled);
-    if (enabledSports.length === 0) {
-      setMessage({ type: 'error', text: 'Please select at least one sport for the event.' });
-      return;
-    }
+    // Client-side validation
+    const validation = validateEventConfigPayload({
+      name,
+      eventDate,
+      venue,
+      configuration: { sports: sportsConfig }
+    });
 
-    for (const [sportName, cfg] of enabledSports) {
-      if (!cfg.categories || cfg.categories.length === 0) {
-        setMessage({ type: 'error', text: `Please select or add at least one category for ${sportName}.` });
-        return;
-      }
+    if (!validation.valid) {
+      setMessage({ type: 'error', text: validation.error || 'Validation failed' });
+      return;
     }
 
     setIsSaving(true);
@@ -175,10 +191,10 @@ export default function EventConfigurationPage() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          eventId,
-          name,
+          eventId: isCreatingNew ? null : selectedEventId,
+          name: name.trim(),
           eventDate,
-          venue,
+          venue: venue.trim(),
           configuration: { sports: sportsConfig }
         })
       });
@@ -190,8 +206,15 @@ export default function EventConfigurationPage() {
 
       setMessage({
         type: 'success',
-        text: 'Event configuration saved successfully! Court Management and Match Creation will now use these settings.'
+        text: `Event configuration ${isCreatingNew ? 'created' : 'updated'} successfully in Supabase! Court Management now uses this source of truth.`
       });
+
+      if (result.event?.id) {
+        setSelectedEventId(result.event.id);
+        setIsCreatingNew(false);
+        // Refresh event list to include newly created/edited event
+        loadConfig(result.event.id);
+      }
     } catch (err: any) {
       setMessage({ type: 'error', text: err.message });
     } finally {
@@ -199,25 +222,55 @@ export default function EventConfigurationPage() {
     }
   };
 
-  const sportList = Object.keys(DEFAULT_SPORTS_CONFIG);
+  const sportList = Object.keys(SPORT_FACILITY_DEFAULTS);
 
   return (
     <div className="max-w-4xl space-y-8 pb-20">
-      {/* Header */}
-      <div>
-        <h1 className="text-3xl font-black tracking-tight text-gray-900 dark:text-white flex items-center gap-3">
-          <Settings className="w-8 h-8 text-blue-600" />
-          Event Configuration
-        </h1>
-        <p className="text-gray-500 font-medium text-sm mt-1">
-          Define tournament sports, playing facilities, and competition categories. Match & Court Management will dynamically reflect these choices.
-        </p>
+      {/* Header & Event Selector */}
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+        <div>
+          <h1 className="text-3xl font-black tracking-tight text-gray-900 dark:text-white flex items-center gap-3">
+            <Settings className="w-8 h-8 text-blue-600" />
+            Event Configuration
+          </h1>
+          <p className="text-gray-500 font-medium text-sm mt-1">
+            Configure tournament sports, facilities, and competition categories. Stored in Supabase as the single source of truth.
+          </p>
+        </div>
+
+        {/* Mode / Event Selector */}
+        <div className="flex items-center gap-2">
+          {eventsList.length > 0 && (
+            <select
+              value={isCreatingNew ? 'NEW' : (selectedEventId || '')}
+              onChange={(e) => handleSelectEvent(e.target.value)}
+              className="px-3 py-2 text-xs font-bold rounded-xl border border-gray-200 dark:border-zinc-700 bg-white dark:bg-zinc-800 text-gray-800 dark:text-gray-200 focus:outline-none focus:ring-2 focus:ring-blue-500"
+            >
+              {eventsList.map((ev) => (
+                <option key={ev.id} value={ev.id}>
+                  {ev.name} ({ev.event_date || 'No Date'})
+                </option>
+              ))}
+              <option value="NEW">+ Create New Event</option>
+            </select>
+          )}
+
+          {!isCreatingNew && (
+            <button
+              type="button"
+              onClick={() => handleSelectEvent('NEW')}
+              className="flex items-center gap-1.5 px-3 py-2 bg-blue-50 dark:bg-blue-900/40 text-blue-600 dark:text-blue-400 hover:bg-blue-100 rounded-xl text-xs font-black transition-colors"
+            >
+              <FolderPlus className="w-3.5 h-3.5" /> New Event
+            </button>
+          )}
+        </div>
       </div>
 
       {message && (
         <div
           id="config-alert-message"
-          className={`p-4 rounded-2xl flex items-center gap-3 ${
+          className={`p-4 rounded-2xl flex items-center gap-3 animate-in fade-in duration-200 ${
             message.type === 'success'
               ? 'bg-emerald-50 text-emerald-800 border border-emerald-200 shadow-sm'
               : 'bg-rose-50 text-rose-800 border border-rose-200 shadow-sm'
@@ -233,11 +286,21 @@ export default function EventConfigurationPage() {
       )}
 
       {isLoading ? (
-        <div className="py-16 text-center text-gray-400 font-medium text-sm">
-          Loading Event Configuration...
+        <div className="py-16 text-center text-gray-400 font-medium text-sm flex flex-col items-center justify-center gap-3">
+          <RefreshCw className="w-6 h-6 animate-spin text-blue-600" />
+          <span>Loading Event Configuration from Supabase...</span>
         </div>
       ) : (
         <form onSubmit={handleSave} className="space-y-8">
+          {/* Status Badge */}
+          <div className="flex items-center justify-between px-2 text-xs font-semibold text-gray-400">
+            <span className="flex items-center gap-1.5">
+              <span className="w-2 h-2 rounded-full bg-emerald-500" />
+              Mode: {isCreatingNew ? 'Creating New Event' : `Editing Event (${selectedEventId?.slice(0, 8)}...)`}
+            </span>
+            <span>Source: {dataSource}</span>
+          </div>
+
           {/* 1. EVENT DETAILS */}
           <div className="bg-white dark:bg-zinc-900 border border-gray-200 dark:border-zinc-800 rounded-3xl p-6 shadow-sm space-y-5">
             <h2 className="text-lg font-bold text-gray-900 dark:text-white flex items-center gap-2">
@@ -248,7 +311,7 @@ export default function EventConfigurationPage() {
             <div className="space-y-4">
               <div>
                 <label className="block text-xs font-black uppercase tracking-wider text-gray-600 dark:text-gray-400 mb-1.5">
-                  Event Name
+                  Event Name <span className="text-rose-500">*</span>
                 </label>
                 <input
                   type="text"
@@ -263,24 +326,26 @@ export default function EventConfigurationPage() {
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div>
                   <label className="block text-xs font-black uppercase tracking-wider text-gray-600 dark:text-gray-400 mb-1.5 flex items-center gap-1">
-                    <Calendar className="w-3.5 h-3.5" /> Event Date
+                    <Calendar className="w-3.5 h-3.5" /> Event Date <span className="text-rose-500">*</span>
                   </label>
                   <input
                     type="date"
                     value={eventDate}
                     onChange={(e) => setEventDate(e.target.value)}
+                    required
                     className="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-zinc-700 bg-gray-50/50 dark:bg-zinc-800 text-gray-900 dark:text-white text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 font-medium"
                   />
                 </div>
 
                 <div>
                   <label className="block text-xs font-black uppercase tracking-wider text-gray-600 dark:text-gray-400 mb-1.5 flex items-center gap-1">
-                    <MapPin className="w-3.5 h-3.5" /> Venue
+                    <MapPin className="w-3.5 h-3.5" /> Venue <span className="text-rose-500">*</span>
                   </label>
                   <input
                     type="text"
                     value={venue}
                     onChange={(e) => setVenue(e.target.value)}
+                    required
                     placeholder="e.g. Main Sports Complex"
                     className="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-zinc-700 bg-gray-50/50 dark:bg-zinc-800 text-gray-900 dark:text-white text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 font-medium"
                   />
@@ -294,7 +359,7 @@ export default function EventConfigurationPage() {
             <div className="flex items-center justify-between">
               <h2 className="text-lg font-bold text-gray-900 dark:text-white flex items-center gap-2">
                 <Trophy className="w-5 h-5 text-blue-600" />
-                2. Select Tournament Sports
+                2. Select Sports <span className="text-rose-500 text-sm">*</span>
               </h2>
               <span className="text-xs font-medium text-gray-400">
                 Select one or multiple sports
@@ -331,7 +396,7 @@ export default function EventConfigurationPage() {
             </div>
           </div>
 
-          {/* 3. PER-SPORT FACILITY & CATEGORY CONFIGURATION */}
+          {/* 3. FACILITY & CATEGORY CONFIGURATION PER SPORT */}
           <div className="space-y-6">
             <div className="flex items-center justify-between">
               <h2 className="text-lg font-bold text-gray-900 dark:text-white flex items-center gap-2">
@@ -389,10 +454,10 @@ export default function EventConfigurationPage() {
                         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
                           <div>
                             <label className="text-xs font-black uppercase tracking-wider text-gray-700 dark:text-gray-300">
-                              Facility: {cfg.facilityType || facilityInfo.facilityType}
+                              Facility Type: {cfg.facilityType || facilityInfo.facilityType}
                             </label>
                             <p className="text-xs text-gray-400">
-                              Number of available {cfg.facilityType?.toLowerCase() || facilityInfo.facilityType.toLowerCase()} for {sportName}
+                              Total available {cfg.facilityType?.toLowerCase() || facilityInfo.facilityType.toLowerCase()} for {sportName}
                             </p>
                           </div>
 
@@ -403,7 +468,7 @@ export default function EventConfigurationPage() {
                             <input
                               type="number"
                               min={1}
-                              max={30}
+                              max={50}
                               value={cfg.facilityCount || 1}
                               onChange={(e) =>
                                 handleFacilityCountChange(sportName, parseInt(e.target.value) || 1)
@@ -439,7 +504,7 @@ export default function EventConfigurationPage() {
                       {/* Categories Configuration */}
                       <div className="space-y-3 pt-2">
                         <label className="text-xs font-black uppercase tracking-wider text-gray-700 dark:text-gray-300 block">
-                          Competition Categories for {sportName}
+                          Competition Categories for {sportName} <span className="text-rose-500">*</span>
                         </label>
 
                         {/* Category Checkboxes */}
@@ -466,7 +531,7 @@ export default function EventConfigurationPage() {
                         <div className="flex gap-2 pt-1">
                           <input
                             type="text"
-                            placeholder={`e.g. Mixed Doubles, Under-19`}
+                            placeholder={`Add category for ${sportName} (e.g. Mixed Doubles, U-19)`}
                             value={newCategoryInputs[sportName] || ''}
                             onChange={(e) =>
                               setNewCategoryInputs((prev) => ({
@@ -505,7 +570,7 @@ export default function EventConfigurationPage() {
               className="w-full sm:w-auto inline-flex items-center justify-center gap-2 px-8 py-4 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white font-black text-base rounded-2xl transition-all shadow-xl shadow-blue-500/20"
             >
               <Save className="w-5 h-5" />
-              {isSaving ? "Saving Configuration..." : "Save Configuration"}
+              {isSaving ? "Saving to Supabase..." : (isCreatingNew ? "Create & Save Event" : "Save Event Configuration")}
             </button>
           </div>
         </form>

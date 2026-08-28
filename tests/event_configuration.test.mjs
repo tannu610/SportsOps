@@ -102,7 +102,7 @@ test('EVENT CONFIGURATION: Dynamic sports, categories, and facility allocations'
     assert.equal(data.success, true);
 
     // Verify re-fetch returns the newly saved settings
-    const checkRes = await fetch(`${baseUrl}/api/admin/event/config`);
+    const checkRes = await fetch(`${baseUrl}/api/admin/event/config?eventId=${eventId}`);
     const checkData = await checkRes.json();
 
     assert.equal(checkData.event.name, "Sports Day Championship 2026");
@@ -159,7 +159,7 @@ test('EVENT CONFIGURATION: Dynamic sports, categories, and facility allocations'
     assert.equal(res.status, 200);
     assert.equal(data.success, true);
 
-    const checkRes = await fetch(`${baseUrl}/api/admin/event/config`);
+    const checkRes = await fetch(`${baseUrl}/api/admin/event/config?eventId=${eventId}`);
     const checkData = await checkRes.json();
 
     assert.equal(checkData.event.name, "Sports Day Championship 2026 (Updated)");
