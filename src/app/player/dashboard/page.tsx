@@ -1,36 +1,50 @@
 "use client";
 
-import { useState, useEffect, Suspense } from "react";
+import { useState, useEffect, Suspense, useMemo } from "react";
 import { useSearchParams } from "next/navigation";
+import Link from "next/link";
 import { Bell, MapPin, Clock, CalendarDays, CheckCircle2, XCircle, Trophy } from "lucide-react";
 import { createClient } from "@/utils/supabase/client";
 
 function DashboardContent() {
+  const supabase = useMemo(() => createClient(), []);
   const searchParams = useSearchParams();
-  const playerId = searchParams.get("id");
-  
+  const rawId = searchParams.get("id");
+
+  const [playerId, setPlayerId] = useState<string | null>(rawId);
   const [player, setPlayer] = useState<any>(null);
   const [nextMatch, setNextMatch] = useState<any>(null);
   const [isLoading, setIsLoading] = useState(true);
-  
+  const [unreadCount, setUnreadCount] = useState<number>(0);
+  const [recentAlert, setRecentAlert] = useState<{ message: string; id?: string } | null>(null);
+
   const [hasAcknowledged, setHasAcknowledged] = useState(false);
   const [responseType, setResponseType] = useState<"COMING" | "UNAVAILABLE" | null>(null);
   const [notificationStatus, setNotificationStatus] = useState<string>("default");
   const [pushError, setPushError] = useState<string | null>(null);
 
-  const supabase = createClient();
+  // Sync playerId from URL searchParams or localStorage
+  useEffect(() => {
+    if (rawId) {
+      setPlayerId(rawId);
+      if (typeof window !== 'undefined') {
+        localStorage.setItem('sports_player_id', rawId);
+      }
+    } else if (typeof window !== 'undefined') {
+      const stored = localStorage.getItem('sports_player_id');
+      if (stored) setPlayerId(stored);
+    }
+  }, [rawId]);
 
   const registerAndSaveSubscription = async () => {
     try {
-      if (!('serviceWorker' in navigator)) throw new Error("Service Worker not supported in this browser (are you in an embedded webview like WhatsApp?)");
+      if (!('serviceWorker' in navigator)) throw new Error("Service Worker not supported in this browser");
       
-      // Manually register the SW because next-pwa doesn't run in Turbopack
       const registration = await navigator.serviceWorker.register('/sw.js');
       await navigator.serviceWorker.ready;
       if (!registration.pushManager) throw new Error("Push Manager not supported in this browser.");
 
       const vapidPublicKey = process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY;
-      
       if (!vapidPublicKey) {
         throw new Error("VAPID Public Key is missing from environment variables!");
       }
@@ -43,9 +57,9 @@ function DashboardContent() {
       const res = await fetch('/api/push/subscribe', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ subscription, playerId })
+        body: JSON.stringify({ playerId, subscription })
       });
-      
+
       const data = await res.json();
       if (data.error) throw new Error("API Error: " + data.error);
 
@@ -61,7 +75,6 @@ function DashboardContent() {
   useEffect(() => {
     if ("Notification" in window) {
       setNotificationStatus(Notification.permission);
-      // If already granted, automatically ensure the subscription is saved to the DB
       if (Notification.permission === 'granted' && playerId) {
         registerAndSaveSubscription();
       }
@@ -106,12 +119,27 @@ function DashboardContent() {
       
       setIsLoading(false);
     }
+
+    async function loadNotifications() {
+      if (!playerId) return;
+      try {
+        const res = await fetch(`/api/player/notifications?playerId=${playerId}`);
+        const data = await res.json();
+        if (data.unreadCount !== undefined) {
+          setUnreadCount(data.unreadCount);
+        }
+      } catch (err) {
+        console.error('Error fetching notifications for dashboard:', err);
+      }
+    }
     
     loadDashboard();
+    loadNotifications();
     
     // Set up real-time subscription for automatic updates without refresh
+    const channelName = `player-dashboard-${playerId}`;
     const channel = supabase
-      .channel('player-dashboard-changes')
+      .channel(channelName)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'matches' }, () => {
         loadDashboard();
       })
@@ -119,6 +147,17 @@ function DashboardContent() {
         if (payload.new && (payload.new as any).id === playerId) {
           loadDashboard();
         }
+      })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'notifications', filter: `player_id=eq.${playerId}` }, () => {
+        loadNotifications();
+        loadDashboard();
+      })
+      .on('broadcast', { event: 'new-notification' }, (payload: any) => {
+        if (payload.payload) {
+          setRecentAlert(payload.payload);
+          setUnreadCount((prev) => prev + 1);
+        }
+        loadDashboard();
       })
       .subscribe();
 
@@ -139,7 +178,6 @@ function DashboardContent() {
     }
   };
 
-  // Helper function for VAPID key conversion
   const urlBase64ToUint8Array = (base64String: string) => {
     const padding = '='.repeat((4 - base64String.length % 4) % 4);
     const base64 = (base64String + padding).replace(/\-/g, '+').replace(/_/g, '/');
@@ -198,7 +236,14 @@ function DashboardContent() {
   };
 
   if (isLoading) return <div className="p-8 text-center text-gray-500">Loading your profile...</div>;
-  if (!player) return <div className="p-8 text-center text-red-500">Player not found or invalid link.</div>;
+  if (!player) return (
+    <div className="p-8 text-center space-y-4">
+      <p className="text-red-500 font-bold">Player not found or session expired.</p>
+      <Link href="/player/check-in" className="inline-block px-5 py-2.5 bg-blue-600 text-white font-bold rounded-xl text-sm hover:bg-blue-700">
+        Go to Check-In
+      </Link>
+    </div>
+  );
 
   const opponentName = getOpponentText();
   const partnerName = getPartnerText();
@@ -233,21 +278,60 @@ function DashboardContent() {
         </div>
       )}
 
+      {/* Live Real-time Notification Banner */}
+      {recentAlert && (
+        <div className="bg-gradient-to-r from-blue-600 to-indigo-600 text-white rounded-2xl p-4 shadow-xl flex items-start gap-3 animate-in fade-in slide-in-from-top-4 duration-300">
+          <Bell className="w-5 h-5 shrink-0 mt-0.5 text-amber-300 animate-bounce" />
+          <div className="flex-1 min-w-0">
+            <div className="flex items-center justify-between">
+              <h4 className="text-[11px] font-black uppercase tracking-wider text-blue-200">New Match Notification</h4>
+              <Link href={`/player/notifications?id=${playerId}`} className="text-[11px] font-bold text-amber-300 hover:underline">
+                View All →
+              </Link>
+            </div>
+            <p className="text-sm font-bold mt-1 leading-snug">{recentAlert.message}</p>
+          </div>
+          <button onClick={() => setRecentAlert(null)} className="text-blue-200 hover:text-white p-1">
+            <XCircle className="w-4 h-4" />
+          </button>
+        </div>
+      )}
+
       {/* Header Info */}
       <div className="flex justify-between items-center bg-white dark:bg-zinc-900 p-4 rounded-2xl shadow-sm border border-gray-100 dark:border-zinc-800">
         <div>
           <h2 className="text-xl font-bold">Hi, {player.name.split(' ')[0]} 👋</h2>
           <p className="text-gray-500 text-sm">{player.employee_id} • {player.sport}</p>
         </div>
-        <div className="flex flex-col items-end">
-          <span className="text-xs text-gray-400 mb-1">STATUS</span>
-          <span className={`px-3 py-1 rounded-full text-xs font-bold tracking-wide ${
-            player.status === 'PRESENT' || player.status === 'AVAILABLE' ? 'bg-green-100 text-green-800' :
-            player.status === 'PLAYING' ? 'bg-blue-100 text-blue-800' :
-            'bg-gray-100 text-gray-800'
-          }`}>
-            {player.status}
-          </span>
+        <div className="flex items-center gap-3">
+          {/* Notification Bell with Real-time Count Badge */}
+          <Link
+            href={`/player/notifications?id=${playerId}`}
+            id="dashboard-bell-link"
+            className="relative p-2.5 rounded-2xl bg-gray-100 dark:bg-zinc-800 text-gray-600 dark:text-gray-300 hover:bg-blue-50 hover:text-blue-600 transition-all"
+            title="Notifications"
+          >
+            <Bell className="w-5 h-5" />
+            {unreadCount > 0 && (
+              <span
+                id="dashboard-notification-badge"
+                className="absolute -top-1 -right-1 bg-rose-500 text-white text-[10px] font-black rounded-full w-5 h-5 flex items-center justify-center animate-pulse shadow-md shadow-rose-200"
+              >
+                {unreadCount > 9 ? '9+' : unreadCount}
+              </span>
+            )}
+          </Link>
+
+          <div className="flex flex-col items-end">
+            <span className="text-xs text-gray-400 mb-1">STATUS</span>
+            <span className={`px-3 py-1 rounded-full text-xs font-bold tracking-wide ${
+              player.status === 'PRESENT' || player.status === 'AVAILABLE' ? 'bg-green-100 text-green-800' :
+              player.status === 'PLAYING' ? 'bg-blue-100 text-blue-800' :
+              'bg-gray-100 text-gray-800'
+            }`}>
+              {player.status}
+            </span>
+          </div>
         </div>
       </div>
 

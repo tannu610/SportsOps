@@ -74,6 +74,11 @@ export default function CheckInPage() {
       }
     }
     
+    // Save to localStorage for persistent session
+    if (typeof window !== 'undefined') {
+      localStorage.setItem('sports_player_id', player.id);
+    }
+
     // Route to dashboard
     router.push(`/player/dashboard?id=${player.id}`);
   };

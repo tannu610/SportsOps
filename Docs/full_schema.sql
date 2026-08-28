@@ -32,6 +32,7 @@ CREATE TABLE IF NOT EXISTS events (
   sport TEXT,
   event_date DATE,
   venue TEXT,
+  configuration JSONB DEFAULT '{}'::jsonb,
   created_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now())
 );
 
@@ -270,6 +271,7 @@ $$ LANGUAGE plpgsql SECURITY DEFINER;
 
 ALTER TABLE players REPLICA IDENTITY FULL;
 ALTER TABLE matches REPLICA IDENTITY FULL;
+ALTER TABLE notifications REPLICA IDENTITY FULL;
 
 DO $$
 BEGIN
@@ -281,6 +283,12 @@ BEGIN
   
   BEGIN
     ALTER PUBLICATION supabase_realtime ADD TABLE matches;
+  EXCEPTION WHEN duplicate_object THEN
+    NULL;
+  END;
+
+  BEGIN
+    ALTER PUBLICATION supabase_realtime ADD TABLE notifications;
   EXCEPTION WHEN duplicate_object THEN
     NULL;
   END;

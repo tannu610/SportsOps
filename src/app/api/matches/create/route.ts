@@ -160,7 +160,55 @@ export async function POST(req: Request) {
       // 4. Mark players as CALLED
       await supabase.rpc('call_players_for_match', { p_player_ids: playerIds });
 
-      return NextResponse.json({ success: true, match: newMatch });
+      // 5. Create notification records in DB for all players in this match
+      const formattedTime = new Date(scheduledTime).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true });
+      const categoryText = category && category !== 'NA' ? category : (phase || 'Round 1');
+      const notificationMessage = `Your ${sport} match (${categoryText}) at ${playingArea} is scheduled for ${formattedTime}. Please report immediately.`;
+
+      const notificationInserts = playerIds.map(pid => ({
+        player_id: pid,
+        match_id: newMatch.id,
+        type: 'MATCH_CALLED',
+        message: notificationMessage,
+        read: false
+      }));
+
+      const { data: insertedNotifs, error: notifErr } = await supabase
+        .from('notifications')
+        .insert(notificationInserts)
+        .select();
+
+      if (notifErr) {
+        console.error('Error creating player notifications:', notifErr);
+      }
+
+      // 6. Broadcast notification via Realtime channels to open player pages
+      try {
+        for (const pid of playerIds) {
+          const insertedNotif = (insertedNotifs || []).find(n => n.player_id === pid);
+          const payload = insertedNotif || {
+            id: `gen-${Date.now()}-${pid}`,
+            player_id: pid,
+            match_id: newMatch.id,
+            type: 'MATCH_CALLED',
+            message: notificationMessage,
+            sent_at: new Date().toISOString(),
+            read: false
+          };
+
+          const channel = supabase.channel(`player-notifications-${pid}`);
+          await channel.send({
+            type: 'broadcast',
+            event: 'new-notification',
+            payload
+          });
+          supabase.removeChannel(channel);
+        }
+      } catch (broadcastErr) {
+        console.error('Error broadcasting realtime notifications:', broadcastErr);
+      }
+
+      return NextResponse.json({ success: true, match: newMatch, notifications: insertedNotifs });
     } finally {
       // Release locks
       for (const key of playerLockKeys) inFlightPlayerLocks.delete(key);

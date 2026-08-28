@@ -50,11 +50,42 @@ export default function MatchesPage() {
   const [t2p2, setT2p2] = useState("");
   const [matchTime, setMatchTime] = useState("");
 
+  const [sportConfigs, setSportConfigs] = useState<Record<string, { areaLabel: string; areas: string[]; categories: string[] }>>(SPORT_CONFIG);
+
   const supabase = createClient();
 
   useEffect(() => {
     async function loadData() {
       setIsLoading(true);
+
+      // Load dynamic event configuration (sports, categories, facilities)
+      try {
+        const configRes = await fetch('/api/admin/event/config');
+        const configData = await configRes.json();
+        if (configData.configuration?.sports) {
+          const dynamicMap: Record<string, { areaLabel: string; areas: string[]; categories: string[] }> = {};
+          
+          Object.entries(configData.configuration.sports).forEach(([sName, sCfg]: [string, any]) => {
+            if (sCfg.enabled) {
+              const count = Math.max(1, sCfg.facilityCount || 1);
+              const unit = sCfg.facilityUnit || (sName === 'Table Tennis' ? 'Table' : sName === 'Cricket' || sName === 'Football' ? 'Ground' : 'Court');
+              const generatedAreas = Array.from({ length: count }, (_, i) => `${unit} ${i + 1}`);
+              dynamicMap[sName] = {
+                areaLabel: unit,
+                areas: generatedAreas,
+                categories: sCfg.categories && sCfg.categories.length > 0 ? sCfg.categories : ["Open"]
+              };
+            }
+          });
+
+          if (Object.keys(dynamicMap).length > 0) {
+            setSportConfigs(dynamicMap);
+          }
+        }
+      } catch (err) {
+        console.error("Error loading dynamic event config in matches page:", err);
+      }
+
       const { data: events } = await supabase.from('events').select('id').limit(1);
       if (events && events.length > 0) {
         const currentEventId = events[0].id;
@@ -99,9 +130,9 @@ export default function MatchesPage() {
 
   const handleSportChange = (newSport: string) => {
     setSport(newSport);
-    const config = SPORT_CONFIG[newSport] || SPORT_CONFIG["Other"];
-    setCategory(config.categories[0]);
-    setArea(config.areas[0]);
+    const config = sportConfigs[newSport] || SPORT_CONFIG[newSport] || SPORT_CONFIG["Other"];
+    setCategory(config.categories[0] || "Open");
+    setArea(config.areas[0] || "Court 1");
   };
 
   const getPlayerIdByEmpId = (empId: string, matchSport: string, matchCategory: string) => {
@@ -273,7 +304,7 @@ export default function MatchesPage() {
     return new Date(isoString).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true });
   };
 
-  const activeConfig = SPORT_CONFIG[sport] || SPORT_CONFIG["Other"];
+  const activeConfig = sportConfigs[sport] || Object.values(sportConfigs)[0] || SPORT_CONFIG["Badminton"];
   const isDoubles = category.includes("Doubles");
 
   const eligiblePlayers = players.filter(p => {
@@ -409,7 +440,7 @@ export default function MatchesPage() {
                 <div className="space-y-2">
                   <label className="text-xs font-black text-gray-400 uppercase tracking-widest">Match Type</label>
                   <select value={sport} onChange={(e) => handleSportChange(e.target.value)} className="w-full p-4 border-2 border-gray-100 rounded-2xl bg-gray-50 text-gray-800 font-bold focus:border-indigo-500 focus:ring-4 focus:ring-indigo-500/10 outline-none transition-all">
-                    {Object.keys(SPORT_CONFIG).map(s => <option key={s} value={s}>{s}</option>)}
+                    {Object.keys(sportConfigs).map(s => <option key={s} value={s}>{s}</option>)}
                   </select>
                 </div>
                 <div className="space-y-2">

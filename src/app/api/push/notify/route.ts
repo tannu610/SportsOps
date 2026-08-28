@@ -1,62 +1,114 @@
-import { NextResponse } from 'next/server'
-import { createClient } from '@/utils/supabase/server'
-import { sendPushNotification } from '@/utils/push'
+import { NextResponse } from 'next/server';
+import { createClient } from '@/utils/supabase/server';
+import { sendPushNotification } from '@/utils/push';
 
 export async function POST(req: Request) {
   try {
-    const supabase = await createClient()
+    const supabase = await createClient();
     
     // Ensure the caller is an admin (user session exists)
-    const { data: { user } } = await supabase.auth.getUser()
+    const { data: { user } } = await supabase.auth.getUser();
     if (!user) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
 
-    const { matchId } = await req.json()
+    const { matchId } = await req.json();
     
     // Fetch match details and players
     const { data: match, error: matchError } = await supabase
       .from('matches')
       .select(`
-        id, sport, category, playing_area,
-        team1_p1:players!fk_t1p1(id, push_subscription),
-        team1_p2:players!fk_t1p2(id, push_subscription),
-        team2_p1:players!fk_t2p1(id, push_subscription),
-        team2_p2:players!fk_t2p2(id, push_subscription)
+        id, sport, category, playing_area, scheduled_time,
+        team1_p1:players!fk_t1p1(id, name, push_subscription),
+        team1_p2:players!fk_t1p2(id, name, push_subscription),
+        team2_p1:players!fk_t2p1(id, name, push_subscription),
+        team2_p2:players!fk_t2p2(id, name, push_subscription)
       `)
       .eq('id', matchId)
-      .single()
+      .single();
 
-    if (matchError || !match) throw new Error('Match not found')
+    if (matchError || !match) throw new Error('Match not found');
 
-    // Collect all valid subscriptions
-    const subscriptions: any[] = []
-    const players = [match.team1_p1, match.team1_p2, match.team2_p1, match.team2_p2].filter(Boolean)
-    
-    players.forEach((p: any) => {
-      if (p.push_subscription) subscriptions.push(p.push_subscription)
-    })
+    const rawPlayers = [match.team1_p1, match.team1_p2, match.team2_p1, match.team2_p2];
+    const players: any[] = rawPlayers
+      .flat()
+      .filter((p: any): p is { id: string; name: string; push_subscription: any } => Boolean(p && p.id));
+    const playerIds: string[] = players.map((p) => p.id);
 
-    if (subscriptions.length === 0) {
-      return NextResponse.json({ message: 'No players have push notifications enabled for this match.' })
+    const messageText = `Your ${match.sport} match at ${match.playing_area} is starting soon. Please report immediately.`;
+
+    // 1. Always create notification records in DB for all players
+    const notificationInserts = playerIds.map(pid => ({
+      player_id: pid,
+      match_id: match.id,
+      type: 'MATCH_CALLED',
+      message: messageText,
+      read: false
+    }));
+
+    const { data: insertedNotifs, error: notifErr } = await supabase
+      .from('notifications')
+      .insert(notificationInserts)
+      .select();
+
+    if (notifErr) {
+      console.error('Error inserting notifications in push/notify:', notifErr);
     }
 
-    const payload = JSON.stringify({
-      title: 'Time for your match!',
-      body: `Your ${match.sport} match is starting soon at ${match.playing_area}. Please report immediately.`,
-      url: `/player/dashboard`
-    })
+    // 2. Broadcast via Supabase Realtime channel for instant in-app update
+    try {
+      for (const pid of playerIds) {
+        const notif = insertedNotifs?.find(n => n.player_id === pid);
+        const payload = notif || {
+          id: `gen-${Date.now()}-${pid}`,
+          player_id: pid,
+          match_id: match.id,
+          type: 'MATCH_CALLED',
+          message: messageText,
+          sent_at: new Date().toISOString(),
+          read: false
+        };
 
-    // Send push to all subscribed players
-    const pushPromises = subscriptions.map(sub => sendPushNotification(sub, payload))
-    await Promise.all(pushPromises)
-    
-    // Optional: Update match status to NOTIFIED
-    await supabase.from('matches').update({ status: 'NOTIFIED' }).eq('id', matchId)
+        const channel = supabase.channel(`player-notifications-${pid}`);
+        await channel.send({
+          type: 'broadcast',
+          event: 'new-notification',
+          payload
+        });
+        supabase.removeChannel(channel);
+      }
+    } catch (broadcastErr) {
+      console.error('Error broadcasting realtime notifications:', broadcastErr);
+    }
 
-    return NextResponse.json({ success: true, count: subscriptions.length })
+    // 3. Update match status to NOTIFIED
+    await supabase.from('matches').update({ status: 'NOTIFIED' }).eq('id', matchId);
+
+    // 4. Send Web Push to subscribed devices (if any)
+    const subscriptions: any[] = [];
+    players.forEach((p: any) => {
+      if (p.push_subscription) subscriptions.push(p.push_subscription);
+    });
+
+    if (subscriptions.length > 0) {
+      const payload = JSON.stringify({
+        title: 'Time for your match!',
+        body: messageText,
+        url: `/player/dashboard`
+      });
+
+      const pushPromises = subscriptions.map(sub => sendPushNotification(sub, payload));
+      await Promise.all(pushPromises);
+    }
+
+    return NextResponse.json({
+      success: true,
+      count: playerIds.length,
+      pushCount: subscriptions.length,
+      notifications: insertedNotifs
+    });
   } catch (err: any) {
-    console.error('Push notify error:', err)
-    return NextResponse.json({ error: err.message }, { status: 500 })
+    console.error('Push notify error:', err);
+    return NextResponse.json({ error: err.message }, { status: 500 });
   }
 }
