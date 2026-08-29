@@ -66,8 +66,14 @@ export async function GET(req: Request) {
 
         sportsRows.forEach((row: any) => {
           const sName = row.sport;
-          const facility = row.event_facilities?.[0];
-          const categories = (row.event_categories || []).map((c: any) => c.category);
+          const facility = Array.isArray(row.event_facilities)
+            ? row.event_facilities[0]
+            : row.event_facilities;
+          const categories = Array.isArray(row.event_categories)
+            ? row.event_categories.map((c: any) => c.category)
+            : row.event_categories
+            ? [row.event_categories.category]
+            : [];
           const defaultFac = SPORT_FACILITY_DEFAULTS[sName] || {
             facilityType: 'Courts',
             facilityUnit: 'Court',

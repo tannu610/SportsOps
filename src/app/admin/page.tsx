@@ -88,8 +88,8 @@ export default function AdminDashboard() {
 
         <Link href="/admin/matches" className="group p-8 rounded-3xl border-2 border-gray-100 hover:border-purple-300 bg-white dark:bg-zinc-900 shadow-sm hover:shadow-md transition-all flex justify-between items-center">
           <div>
-            <h2 className="text-xl font-black text-gray-900 dark:text-white group-hover:text-purple-500 transition-colors">Manage Matches</h2>
-            <p className="text-sm font-medium text-gray-500 mt-2">Create matches and track live scores.</p>
+            <h2 className="text-xl font-black text-gray-900 dark:text-white group-hover:text-purple-500 transition-colors">Court Management</h2>
+            <p className="text-sm font-medium text-gray-500 mt-2">Monitor live courts, schedule fixtures, and track player responses.</p>
           </div>
           <ArrowRight className="text-gray-300 group-hover:text-purple-500 w-8 h-8 transition-colors" />
         </Link>

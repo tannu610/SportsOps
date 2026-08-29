@@ -32,7 +32,7 @@ export default function AdminLayout({
             <li>
               <Link href="/admin/matches" className="flex items-center px-3 py-2 text-gray-700 dark:text-gray-300 rounded-md hover:bg-gray-100 dark:hover:bg-zinc-800 hover:text-blue-600 dark:hover:text-blue-400 transition-colors">
                 <CalendarDays className="w-5 h-5 mr-3" />
-                Match Management
+                Court Management
               </Link>
             </li>
             <li>
