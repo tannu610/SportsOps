@@ -586,7 +586,7 @@ export default function PlayAreaManagementPage() {
           onClick={() => openCreateModalForCourt(currentCourtList[0] || "Court 1")}
           className="flex items-center px-6 py-3.5 bg-white text-indigo-900 rounded-2xl text-sm font-black hover:bg-gray-100 shadow-xl shadow-indigo-950/40 transition-all w-full md:w-auto justify-center hover:scale-105 active:scale-95"
         >
-          <Plus className="w-5 h-5 mr-2" /> + Create Match
+          <Plus className="w-5 h-5 mr-2" /> Create Match
         </button>
       </div>
 

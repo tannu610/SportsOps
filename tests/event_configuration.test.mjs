@@ -31,7 +31,16 @@ const supabase = createClient(supabaseUrl, anonKey);
 
 test('EVENT CONFIGURATION: Dynamic sports, categories, and facility allocations', async (t) => {
   // 1. Fetch current active event
-  const { data: events } = await supabase.from('events').select('id, name').limit(1);
+  let { data: events } = await supabase.from('events').select('id, name').limit(1);
+  if (!events || events.length === 0) {
+    const { data: newEv } = await supabase.from('events').insert({
+      name: 'Annual Sports Day Championship 2026',
+      sport: 'Badminton',
+      event_date: '2026-09-01',
+      venue: 'Main Arena'
+    }).select();
+    events = newEv;
+  }
   assert.ok(events && events.length > 0, 'An event must exist');
   const eventId = events[0].id;
 

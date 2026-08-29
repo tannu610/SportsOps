@@ -10,7 +10,7 @@ export default function PlayerLayout({
       <header className="h-16 bg-blue-600 text-white flex items-center justify-between px-4 sticky top-0 z-10 shadow-md">
         <a href="/player/dashboard" className="flex items-center hover:opacity-90 transition-opacity">
           <Trophy className="w-5 h-5 mr-2" />
-          <span className="font-bold tracking-tight">Sports Day 2026</span>
+          <span className="font-bold tracking-tight">SportsOps MatchDay</span>
         </a>
       </header>
       

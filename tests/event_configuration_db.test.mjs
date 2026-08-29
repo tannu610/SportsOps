@@ -36,14 +36,16 @@ test('DATABASE LAYER: Event Configuration (Sports, Categories, Facilities)', asy
   const createdEventIds = [];
 
   t.after(async () => {
-    // Cleanup any events created during test
+    // Cleanup any events created during test, preserving at least one baseline event
+    const { data: allEvs } = await supabase.from('events').select('id');
+    const remainingCount = { val: allEvs?.length || 0 };
     for (const eid of createdEventIds) {
-      // Deleting event cascades to event_sports, event_categories, event_facilities
-      try {
-        await supabase.from('event_sports').delete().eq('event_id', eid);
-        await supabase.from('events').delete().eq('id', eid);
-      } catch {
-        // Ignore cleanup errors
+      if (remainingCount.val > 1) {
+        try {
+          await supabase.from('event_sports').delete().eq('event_id', eid);
+          await supabase.from('events').delete().eq('id', eid);
+          remainingCount.val--;
+        } catch {}
       }
     }
   });
