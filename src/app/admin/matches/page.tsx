@@ -64,7 +64,7 @@ type SportFacilityMap = Record<
   }
 >;
 
-export default function CourtManagementPage() {
+export default function PlayAreaManagementPage() {
   const supabase = useMemo(() => createClient(), []);
 
   const [isLoading, setIsLoading] = useState(true);
@@ -189,7 +189,7 @@ export default function CourtManagementPage() {
         if (dbMatches) setMatches(dbMatches as any);
       }
     } catch (err) {
-      console.error("Error loading Court Management data:", err);
+      console.error("Error loading Play Area Management data:", err);
     } finally {
       setIsLoading(false);
     }
@@ -387,7 +387,7 @@ export default function CourtManagementPage() {
 
   // Delete match and rollback players safely
   const deleteMatch = async (matchId: string) => {
-    if (!confirm("Are you sure you want to delete this match? All players will revert to their previous status and this court will become FREE."))
+    if (!confirm("Are you sure you want to delete this match? All players will revert to their previous status and this play area will become FREE."))
       return;
     const { error } = await supabase.rpc("delete_match_and_rollback", { p_match_id: matchId });
     if (error) {
@@ -575,10 +575,10 @@ export default function CourtManagementPage() {
             {eventName} • Match-Day Operations
           </div>
           <h1 className="text-3xl font-black tracking-tight text-white flex items-center gap-3">
-            <Trophy className="w-8 h-8 text-amber-400" /> Court Management
+            <Trophy className="w-8 h-8 text-amber-400" /> Play Area Management
           </h1>
           <p className="text-indigo-200 font-medium mt-1 text-sm">
-            Real-time court allocation, live match progress, and player response tracking.
+            Real-time play area allocation, live match progress, and player response tracking.
           </p>
         </div>
 
@@ -682,7 +682,7 @@ export default function CourtManagementPage() {
         <div className="bg-rose-50 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-900 p-4 rounded-2xl flex items-center gap-3 text-rose-800 dark:text-rose-300 shadow-sm animate-in fade-in duration-200">
           <AlertTriangle className="w-5 h-5 shrink-0 text-rose-600" />
           <div className="text-sm font-bold flex-1">
-            {attentionCount} court{attentionCount > 1 ? "s" : ""} require admin attention (player clicked "I'M UNAVAILABLE" or no-show pending).
+            {attentionCount} play area{attentionCount > 1 ? "s" : ""} require admin attention (player clicked "I'M UNAVAILABLE" or no-show pending).
           </div>
         </div>
       )}
@@ -1252,7 +1252,7 @@ export default function CourtManagementPage() {
                 onClick={() => deleteMatch(managingMatch.id)}
                 className="w-full py-3 bg-rose-50 dark:bg-rose-950/40 text-rose-700 dark:text-rose-300 hover:bg-rose-100 rounded-xl text-xs font-black flex items-center justify-center gap-2 transition-colors"
               >
-                <Trash2 className="w-4 h-4" /> Delete Match & Free Court
+                <Trash2 className="w-4 h-4" /> Delete Match & Free Play Area
               </button>
             </div>
           </div>
@@ -1270,7 +1270,7 @@ export default function CourtManagementPage() {
               <p className="text-xs text-gray-500 font-medium mt-2">
                 {finishingMatch.isWalkover
                   ? "Select the team that reported and is awarded the walkover victory."
-                  : "Select the winning team. The winner will be marked as QUALIFIED and the court will immediately become FREE."}
+                  : "Select the winning team. The winner will be marked as QUALIFIED and the play area will immediately become FREE."}
               </p>
             </div>
 

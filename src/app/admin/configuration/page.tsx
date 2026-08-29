@@ -206,7 +206,7 @@ export default function EventConfigurationPage() {
 
       setMessage({
         type: 'success',
-        text: `Event configuration ${isCreatingNew ? 'created' : 'updated'} successfully in Supabase! Court Management now uses this source of truth.`
+        text: `Event configuration ${isCreatingNew ? 'created' : 'updated'} successfully!`
       });
 
       if (result.event?.id) {
@@ -234,7 +234,7 @@ export default function EventConfigurationPage() {
             Event Configuration
           </h1>
           <p className="text-gray-500 font-medium text-sm mt-1">
-            Configure tournament sports, facilities, and competition categories. Stored in Supabase as the single source of truth.
+            Configure the sports, categories, and playing facilities for this event.
           </p>
         </div>
 
@@ -288,7 +288,7 @@ export default function EventConfigurationPage() {
       {isLoading ? (
         <div className="py-16 text-center text-gray-400 font-medium text-sm flex flex-col items-center justify-center gap-3">
           <RefreshCw className="w-6 h-6 animate-spin text-blue-600" />
-          <span>Loading Event Configuration from Supabase...</span>
+          <span>Loading Event Configuration...</span>
         </div>
       ) : (
         <form onSubmit={handleSave} className="space-y-8">
@@ -296,9 +296,8 @@ export default function EventConfigurationPage() {
           <div className="flex items-center justify-between px-2 text-xs font-semibold text-gray-400">
             <span className="flex items-center gap-1.5">
               <span className="w-2 h-2 rounded-full bg-emerald-500" />
-              Mode: {isCreatingNew ? 'Creating New Event' : `Editing Event (${selectedEventId?.slice(0, 8)}...)`}
+              Mode: {isCreatingNew ? 'Create New Event' : (name ? `Editing: ${name}` : 'Editing Event')}
             </span>
-            <span>Source: {dataSource}</span>
           </div>
 
           {/* 1. EVENT DETAILS */}
@@ -570,7 +569,7 @@ export default function EventConfigurationPage() {
               className="w-full sm:w-auto inline-flex items-center justify-center gap-2 px-8 py-4 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white font-black text-base rounded-2xl transition-all shadow-xl shadow-blue-500/20"
             >
               <Save className="w-5 h-5" />
-              {isSaving ? "Saving to Supabase..." : (isCreatingNew ? "Create & Save Event" : "Save Event Configuration")}
+              {isSaving ? "Saving Configuration..." : (isCreatingNew ? "Create & Save Event" : "Save Event Configuration")}
             </button>
           </div>
         </form>
