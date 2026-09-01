@@ -245,50 +245,39 @@ END;
 $$ LANGUAGE plpgsql SECURITY DEFINER;
 
 
--- 4.5 Complete Match Workflow (Winners -> QUALIFIED, Losers -> DISQUALIFIED / NO_SHOW)
+-- 4.5 Complete Match Workflow (Reset participating players to REGISTERED)
 CREATE OR REPLACE FUNCTION complete_match_workflow(
   p_match_id UUID, 
   p_winning_team TEXT, -- 'team1' or 'team2'
-  p_is_walkover BOOLEAN
+  p_is_walkover BOOLEAN DEFAULT FALSE
 ) RETURNS VOID AS $$
 DECLARE
   v_match RECORD;
-  v_winners UUID[];
-  v_losers UUID[];
-  v_new_qualified_status TEXT;
+  v_all_players UUID[];
 BEGIN
   SELECT * INTO v_match FROM matches WHERE id = p_match_id FOR UPDATE;
   IF NOT FOUND THEN RETURN; END IF;
   
-  IF p_winning_team = 'team1' THEN
-    v_winners := ARRAY[v_match.team1_p1_id, v_match.team1_p2_id];
-    v_losers := ARRAY[v_match.team2_p1_id, v_match.team2_p2_id];
-  ELSE
-    v_winners := ARRAY[v_match.team2_p1_id, v_match.team2_p2_id];
-    v_losers := ARRAY[v_match.team1_p1_id, v_match.team1_p2_id];
-  END IF;
+  v_all_players := ARRAY[v_match.team1_p1_id, v_match.team1_p2_id, v_match.team2_p1_id, v_match.team2_p2_id];
 
   UPDATE matches 
   SET status = CASE WHEN p_is_walkover THEN 'WALKOVER' ELSE 'COMPLETED' END 
   WHERE id = p_match_id;
   
-  -- Dynamically create next qualified status (e.g. 'QUALIFIED - Round 1')
-  v_new_qualified_status := 'QUALIFIED - ' || COALESCE(v_match.phase, 'Round 1');
-  
-  -- Advance winners and increment round
+  -- Reset participating players to REGISTERED without assigning QUALIFIED/DISQUALIFIED
   UPDATE players 
   SET 
     previous_status = status, 
-    status = v_new_qualified_status,
-    current_round = COALESCE(current_round, 1) + 1
-  WHERE id = ANY(v_winners);
-  
-  -- Eliminate losers
-  UPDATE players 
-  SET 
-    previous_status = status, 
-    status = CASE WHEN p_is_walkover THEN 'NO_SHOW' ELSE 'DISQUALIFIED' END 
-  WHERE id = ANY(v_losers);
+    status = CASE 
+      WHEN p_is_walkover AND id = ANY(
+        CASE WHEN p_winning_team = 'team1' 
+          THEN ARRAY[v_match.team2_p1_id, v_match.team2_p2_id]
+          ELSE ARRAY[v_match.team1_p1_id, v_match.team1_p2_id]
+        END
+      ) THEN 'NO_SHOW'
+      ELSE 'REGISTERED'
+    END
+  WHERE id = ANY(v_all_players);
 END;
 $$ LANGUAGE plpgsql SECURITY DEFINER;
 

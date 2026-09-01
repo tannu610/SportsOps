@@ -401,17 +401,25 @@ export default function PlayAreaManagementPage() {
   // Submit match completion / walkover
   const submitMatchResult = async (winningTeam: "team1" | "team2") => {
     if (!finishingMatch) return;
-    const { error } = await supabase.rpc("complete_match_workflow", {
-      p_match_id: finishingMatch.match.id,
-      p_winning_team: winningTeam,
-      p_is_walkover: finishingMatch.isWalkover
-    });
-    if (error) {
-      alert("Error completing match: " + error.message);
-    } else {
+    try {
+      const res = await fetch("/api/matches/complete", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          matchId: finishingMatch.match.id,
+          winningTeam,
+          isWalkover: finishingMatch.isWalkover || false,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || "Failed to complete match");
+      }
       setFinishingMatch(null);
       setManagingMatch(null);
       loadAllData();
+    } catch (err: any) {
+      alert("Error completing match: " + err.message);
     }
   };
 
@@ -556,13 +564,9 @@ export default function PlayAreaManagementPage() {
       p.sport === formSport;
     if (!matchesCategory) return false;
 
-    if (formPhase === "Round 1") return p.status === "PRESENT" || p.status === "AVAILABLE";
-    if (formPhase === "Round 2") return p.status === "QUALIFIED - Round 1";
-    if (formPhase === "Round 3") return p.status === "QUALIFIED - Round 2";
-    if (formPhase === "Quarter Final") return p.status.includes("QUALIFIED");
-    if (formPhase === "Semi Final") return p.status === "QUALIFIED - Quarter Final";
-    if (formPhase === "Final") return p.status === "QUALIFIED - Semi Final";
-    return true;
+    // In V1, SportsOps does not enforce automatic bracket qualifications or elimination locks.
+    // Completed players reset to REGISTERED and remain selectable by the committee for any round/phase.
+    return p.status !== "PLAYING";
   });
 
   return (
@@ -1270,7 +1274,7 @@ export default function PlayAreaManagementPage() {
               <p className="text-xs text-gray-500 font-medium mt-2">
                 {finishingMatch.isWalkover
                   ? "Select the team that reported and is awarded the walkover victory."
-                  : "Select the winning team. The winner will be marked as QUALIFIED and the play area will immediately become FREE."}
+                  : "Select the winning team. The play area will become FREE and participating players will reset to REGISTERED."}
               </p>
             </div>
 

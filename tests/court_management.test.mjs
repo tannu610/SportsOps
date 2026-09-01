@@ -272,15 +272,21 @@ test('COURT MANAGEMENT: Dynamic Court Grid, Match Lifecycle & Player Responses',
     assert.equal(liveMatch.status, 'LIVE', 'Court 3 match must now be LIVE');
   });
 
-  // Test 6: Match completion frees the court back to FREE
-  await t.test('6. Match completion frees Court 3 back to FREE', async () => {
-    // Complete match with Team 1 winning
-    const { error } = await supabase.rpc('complete_match_workflow', {
-      p_match_id: createdMatchId,
-      p_winning_team: 'team1',
-      p_is_walkover: false
+  // Test 6: Match completion frees the court back to FREE and resets players to REGISTERED
+  await t.test('6. Match completion frees Court 3 back to FREE and resets players to REGISTERED', async () => {
+    // Complete match with Team 1 winning via backend API
+    const res = await fetch(`${baseUrl}/api/matches/complete`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        matchId: createdMatchId,
+        winningTeam: 'team1',
+        isWalkover: false,
+      }),
     });
-    assert.ifError(error);
+    const data = await res.json();
+    assert.equal(res.status, 200, `Match completion failed: ${JSON.stringify(data)}`);
+    assert.equal(data.success, true);
 
     // Verify match is marked COMPLETED
     const { data: completedMatch } = await supabase
@@ -289,6 +295,12 @@ test('COURT MANAGEMENT: Dynamic Court Grid, Match Lifecycle & Player Responses',
       .eq('id', createdMatchId)
       .single();
     assert.equal(completedMatch.status, 'COMPLETED');
+
+    // Verify both players reset to REGISTERED (not QUALIFIED or DISQUALIFIED)
+    const { data: p1After } = await supabase.from('players').select('status').eq('id', p1.id).single();
+    const { data: p2After } = await supabase.from('players').select('status').eq('id', p2.id).single();
+    assert.equal(p1After.status, 'REGISTERED', 'Player 1 must be reset to REGISTERED');
+    assert.equal(p2After.status, 'REGISTERED', 'Player 2 must be reset to REGISTERED');
 
     // Verify no active live or scheduled match remains on Court 3
     const { data: activeMatches } = await supabase
