@@ -245,7 +245,7 @@ END;
 $$ LANGUAGE plpgsql SECURITY DEFINER;
 
 
--- 4.5 Complete Match Workflow (Reset participating players to REGISTERED)
+-- 4.5 Complete Match Workflow (Return checked-in players to PRESENT / preserve attendance)
 CREATE OR REPLACE FUNCTION complete_match_workflow(
   p_match_id UUID, 
   p_winning_team TEXT, -- 'team1' or 'team2'
@@ -264,7 +264,11 @@ BEGIN
   SET status = CASE WHEN p_is_walkover THEN 'WALKOVER' ELSE 'COMPLETED' END 
   WHERE id = p_match_id;
   
-  -- Reset participating players to REGISTERED without assigning QUALIFIED/DISQUALIFIED
+  -- Reset participating players:
+  -- - Checked-in players return to PRESENT
+  -- - Non-checked-in players preserve existing attendance state (REGISTERED / ABSENT)
+  -- - Walkover losers are marked NO_SHOW
+  -- - Never assign QUALIFIED or DISQUALIFIED
   UPDATE players 
   SET 
     previous_status = status, 
@@ -275,7 +279,8 @@ BEGIN
           ELSE ARRAY[v_match.team1_p1_id, v_match.team1_p2_id]
         END
       ) THEN 'NO_SHOW'
-      ELSE 'REGISTERED'
+      WHEN check_in_time IS NOT NULL OR previous_status IN ('PRESENT', 'AVAILABLE') THEN 'PRESENT'
+      ELSE COALESCE(NULLIF(previous_status, 'CALLED'), 'REGISTERED')
     END
   WHERE id = ANY(v_all_players);
 END;

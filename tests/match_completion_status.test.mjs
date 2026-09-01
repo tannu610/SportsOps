@@ -32,7 +32,7 @@ const baseUrl = process.env.TEST_BASE_URL || 'http://localhost:3000';
 
 const supabase = createClient(supabaseUrl, anonKey);
 
-test('MATCH COMPLETION: Reset participating players to REGISTERED without automated tournament progression', async (t) => {
+test('MATCH COMPLETION: Reset participating players without automated tournament progression', async (t) => {
   // 1. Ensure test event exists
   let { data: events } = await supabase.from('events').select('id').limit(1);
   if (!events || events.length === 0) {
@@ -50,15 +50,17 @@ test('MATCH COMPLETION: Reset participating players to REGISTERED without automa
   const createdPlayerIds = [];
   const createdMatchIds = [];
 
-  // Helper to create test player
-  async function createPlayer(name, code, category = 'Men Singles') {
+  // Helper to create test player with specific attendance state
+  async function createPlayer(name, code, isCheckedIn = true, category = 'Men Singles') {
     const { data, error } = await supabase.from('players').insert([{
       event_id: eventId,
       employee_id: `COMP_${code}_${testSuffix}`,
       name,
       sport: 'Badminton',
       category,
-      status: 'PLAYING'
+      status: 'PLAYING',
+      check_in_time: isCheckedIn ? new Date().toISOString() : null,
+      previous_status: isCheckedIn ? 'PRESENT' : 'REGISTERED',
     }]).select().single();
     assert.ifError(error);
     createdPlayerIds.push(data.id);
@@ -75,10 +77,10 @@ test('MATCH COMPLETION: Reset participating players to REGISTERED without automa
     }
   });
 
-  // Test 1: Completing a Singles Match
-  await t.test('1. Completing a singles match resets participating players to REGISTERED (no QUALIFIED or DISQUALIFIED)', async () => {
-    const anuj = await createPlayer('Anuj Sharma', 'ANUJ');
-    const rohit = await createPlayer('Rohit Verma', 'ROHIT');
+  // Test 1: Completing a Singles Match for Checked-in Players -> PRESENT
+  await t.test('1. Checked-in singles players return to PRESENT after match completion (no QUALIFIED or DISQUALIFIED)', async () => {
+    const anuj = await createPlayer('Anuj Sharma', 'ANUJ', true);
+    const rohit = await createPlayer('Rohit Verma', 'ROHIT', true);
 
     const { data: match, error: mErr } = await supabase.from('matches').insert({
       event_id: eventId,
@@ -113,22 +115,22 @@ test('MATCH COMPLETION: Reset participating players to REGISTERED without automa
     const { data: completedMatch } = await supabase.from('matches').select('status').eq('id', match.id).single();
     assert.equal(completedMatch.status, 'COMPLETED');
 
-    // Verify Players Status
+    // Verify Players Status returns to PRESENT
     const { data: anujAfter } = await supabase.from('players').select('status').eq('id', anuj.id).single();
     const { data: rohitAfter } = await supabase.from('players').select('status').eq('id', rohit.id).single();
 
-    assert.equal(anujAfter.status, 'REGISTERED', 'Winner must be reset to REGISTERED (not QUALIFIED)');
-    assert.equal(rohitAfter.status, 'REGISTERED', 'Loser must be reset to REGISTERED (not DISQUALIFIED)');
+    assert.equal(anujAfter.status, 'PRESENT', 'Checked-in winner must return to PRESENT (not QUALIFIED)');
+    assert.equal(rohitAfter.status, 'PRESENT', 'Checked-in loser must return to PRESENT (not DISQUALIFIED)');
     assert.notEqual(anujAfter.status, 'QUALIFIED', 'Must not assign QUALIFIED');
     assert.notEqual(rohitAfter.status, 'DISQUALIFIED', 'Must not assign DISQUALIFIED');
   });
 
-  // Test 2: Completing a Doubles Match
-  await t.test('2. Completing a doubles match resets all 4 players to REGISTERED', async () => {
-    const t1p1 = await createPlayer('Doubles P1', 'DP1', 'Men Doubles');
-    const t1p2 = await createPlayer('Doubles P2', 'DP2', 'Men Doubles');
-    const t2p1 = await createPlayer('Doubles P3', 'DP3', 'Men Doubles');
-    const t2p2 = await createPlayer('Doubles P4', 'DP4', 'Men Doubles');
+  // Test 2: Completing a Doubles Match for Checked-in Players -> PRESENT
+  await t.test('2. Checked-in doubles players all return to PRESENT after match completion', async () => {
+    const t1p1 = await createPlayer('Doubles P1', 'DP1', true, 'Men Doubles');
+    const t1p2 = await createPlayer('Doubles P2', 'DP2', true, 'Men Doubles');
+    const t2p1 = await createPlayer('Doubles P3', 'DP3', true, 'Men Doubles');
+    const t2p2 = await createPlayer('Doubles P4', 'DP4', true, 'Men Doubles');
 
     const { data: match, error: mErr } = await supabase.from('matches').insert({
       event_id: eventId,
@@ -161,7 +163,7 @@ test('MATCH COMPLETION: Reset participating players to REGISTERED without automa
     assert.equal(data.success, true);
     assert.equal(data.match.status, 'COMPLETED');
 
-    // Verify all 4 players are REGISTERED
+    // Verify all 4 players return to PRESENT
     const { data: all4 } = await supabase
       .from('players')
       .select('id, name, status')
@@ -169,16 +171,47 @@ test('MATCH COMPLETION: Reset participating players to REGISTERED without automa
 
     assert.equal(all4.length, 4);
     for (const p of all4) {
-      assert.equal(p.status, 'REGISTERED', `${p.name} must be REGISTERED`);
+      assert.equal(p.status, 'PRESENT', `${p.name} must return to PRESENT`);
       assert.ok(!p.status.includes('QUALIFIED'), `${p.name} must not be QUALIFIED`);
       assert.notEqual(p.status, 'DISQUALIFIED', `${p.name} must not be DISQUALIFIED`);
     }
   });
 
-  // Test 3: Completed players remain selectable for future matches across any phase
-  await t.test('3. Completed players remain selectable for subsequent matches across any tournament phase', async () => {
-    const pA = await createPlayer('Player Alpha', 'PA');
-    const pB = await createPlayer('Player Beta', 'PB');
+  // Test 3: Non-checked-in players preserve their existing attendance state
+  await t.test('3. Non-checked-in players preserve existing attendance state (REGISTERED) without being incorrectly marked PRESENT', async () => {
+    const unCheckedP1 = await createPlayer('Unchecked Player 1', 'UP1', false);
+    const unCheckedP2 = await createPlayer('Unchecked Player 2', 'UP2', false);
+
+    const { data: match } = await supabase.from('matches').insert({
+      event_id: eventId,
+      sport: 'Badminton',
+      category: 'Men Singles',
+      phase: 'Round 1',
+      playing_area: 'Court 1',
+      scheduled_time: new Date('2026-09-02T13:00:00Z').toISOString(),
+      team1_p1_id: unCheckedP1.id,
+      team2_p1_id: unCheckedP2.id,
+      status: 'LIVE'
+    }).select().single();
+    createdMatchIds.push(match.id);
+
+    await fetch(`${baseUrl}/api/matches/complete`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ matchId: match.id, winningTeam: 'team1', isWalkover: false })
+    });
+
+    const { data: p1After } = await supabase.from('players').select('status').eq('id', unCheckedP1.id).single();
+    const { data: p2After } = await supabase.from('players').select('status').eq('id', unCheckedP2.id).single();
+
+    assert.equal(p1After.status, 'REGISTERED', 'Unchecked player must remain REGISTERED');
+    assert.equal(p2After.status, 'REGISTERED', 'Unchecked player must remain REGISTERED');
+  });
+
+  // Test 4: Completed players remain selectable for subsequent matches across any phase
+  await t.test('4. Completed players remain selectable for subsequent matches across any tournament phase', async () => {
+    const pA = await createPlayer('Player Alpha', 'PA', true);
+    const pB = await createPlayer('Player Beta', 'PB', true);
 
     // Initial match in Round 1
     const { data: match1 } = await supabase.from('matches').insert({
@@ -201,11 +234,11 @@ test('MATCH COMPLETION: Reset participating players to REGISTERED without automa
       body: JSON.stringify({ matchId: match1.id, winningTeam: 'team1', isWalkover: false })
     });
 
-    // Verify players are REGISTERED
-    const { data: pAReg } = await supabase.from('players').select('status').eq('id', pA.id).single();
-    const { data: pBReg } = await supabase.from('players').select('status').eq('id', pB.id).single();
-    assert.equal(pAReg.status, 'REGISTERED');
-    assert.equal(pBReg.status, 'REGISTERED');
+    // Verify players returned to PRESENT
+    const { data: pAPresent } = await supabase.from('players').select('status').eq('id', pA.id).single();
+    const { data: pBPresent } = await supabase.from('players').select('status').eq('id', pB.id).single();
+    assert.equal(pAPresent.status, 'PRESENT');
+    assert.equal(pBPresent.status, 'PRESENT');
 
     // Admin schedules Player Alpha for Round 2 / Semi Final at a later time
     const resRound2 = await fetch(`${baseUrl}/api/matches/create`, {
@@ -228,10 +261,10 @@ test('MATCH COMPLETION: Reset participating players to REGISTERED without automa
     createdMatchIds.push(r2Data.match.id);
   });
 
-  // Test 4: Walkover match scenario
-  await t.test('4. Walkover match marks match WALKOVER, winner REGISTERED, no-show NO_SHOW (no QUALIFIED or DISQUALIFIED)', async () => {
-    const pPresent = await createPlayer('Present Winner', 'PW');
-    const pNoShow = await createPlayer('NoShow Loser', 'NL');
+  // Test 5: Walkover match scenario
+  await t.test('5. Walkover match marks match WALKOVER, checked-in winner PRESENT, no-show NO_SHOW (no QUALIFIED or DISQUALIFIED)', async () => {
+    const pPresent = await createPlayer('Present Winner', 'PW', true);
+    const pNoShow = await createPlayer('NoShow Loser', 'NL', true);
 
     const { data: match } = await supabase.from('matches').insert({
       event_id: eventId,
@@ -262,7 +295,7 @@ test('MATCH COMPLETION: Reset participating players to REGISTERED without automa
     const { data: pPresentAfter } = await supabase.from('players').select('status').eq('id', pPresent.id).single();
     const { data: pNoShowAfter } = await supabase.from('players').select('status').eq('id', pNoShow.id).single();
 
-    assert.equal(pPresentAfter.status, 'REGISTERED', 'Walkover winner is reset to REGISTERED (not QUALIFIED)');
+    assert.equal(pPresentAfter.status, 'PRESENT', 'Walkover checked-in winner is reset to PRESENT (not QUALIFIED)');
     assert.equal(pNoShowAfter.status, 'NO_SHOW', 'No-show loser is marked NO_SHOW (not DISQUALIFIED)');
     assert.notEqual(pPresentAfter.status, 'QUALIFIED');
     assert.notEqual(pNoShowAfter.status, 'DISQUALIFIED');

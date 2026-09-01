@@ -38,7 +38,9 @@ export async function POST(req: Request) {
 
     // 4. Update participating players:
     // In V1, SportsOps does NOT decide tournament progression (QUALIFIED) or elimination (DISQUALIFIED).
-    // All participating players in a completed match are reset to REGISTERED and remain selectable for future matches.
+    // - If the player checked in before the match (check_in_time IS NOT NULL or previous_status was PRESENT/AVAILABLE),
+    //   their status returns to PRESENT.
+    // - If the player had not checked in, preserve their existing attendance state (REGISTERED / ABSENT).
     const allPlayerIds = [
       match.team1_p1_id,
       match.team1_p2_id,
@@ -46,7 +48,31 @@ export async function POST(req: Request) {
       match.team2_p2_id,
     ].filter(Boolean) as string[];
 
-    if (isWalkover) {
+    if (allPlayerIds.length > 0) {
+      const { data: participatingPlayers, error: pFetchErr } = await supabase
+        .from('players')
+        .select('id, status, previous_status, check_in_time')
+        .in('id', allPlayerIds);
+
+      if (pFetchErr) {
+        console.error('Error fetching participating players for status reset:', pFetchErr);
+      }
+
+      const playerMap = new Map((participatingPlayers || []).map((p) => [p.id, p]));
+
+      const determinePlayerStatus = (playerId: string, isWalkoverLoser: boolean) => {
+        if (isWalkoverLoser) return 'NO_SHOW';
+        const p = playerMap.get(playerId);
+        if (!p) return 'PRESENT'; // default fallback for active match participant
+        if (p.check_in_time || p.previous_status === 'PRESENT' || p.previous_status === 'AVAILABLE') {
+          return 'PRESENT';
+        }
+        if (p.previous_status && ['REGISTERED', 'ABSENT'].includes(p.previous_status)) {
+          return p.previous_status;
+        }
+        return 'REGISTERED';
+      };
+
       const winners = winningTeam === 'team1'
         ? [match.team1_p1_id, match.team1_p2_id].filter(Boolean) as string[]
         : [match.team2_p1_id, match.team2_p2_id].filter(Boolean) as string[];
@@ -54,22 +80,18 @@ export async function POST(req: Request) {
         ? [match.team2_p1_id, match.team2_p2_id].filter(Boolean) as string[]
         : [match.team1_p1_id, match.team1_p2_id].filter(Boolean) as string[];
 
-      if (winners.length > 0) {
-        await supabase.from('players').update({ status: 'REGISTERED' }).in('id', winners);
-      }
-      if (losers.length > 0) {
-        await supabase.from('players').update({ status: 'NO_SHOW' }).in('id', losers);
-      }
-    } else {
-      if (allPlayerIds.length > 0) {
-        const { error: playersUpdateErr } = await supabase
-          .from('players')
-          .update({ status: 'REGISTERED' })
-          .in('id', allPlayerIds);
+      for (const pid of allPlayerIds) {
+        const isLoser = isWalkover && losers.includes(pid);
+        const nextStatus = determinePlayerStatus(pid, isLoser);
+        const currentP = playerMap.get(pid);
 
-        if (playersUpdateErr) {
-          console.error('Error resetting players to REGISTERED:', playersUpdateErr);
-        }
+        await supabase
+          .from('players')
+          .update({
+            previous_status: currentP?.status || null,
+            status: nextStatus,
+          })
+          .eq('id', pid);
       }
     }
 
@@ -80,7 +102,6 @@ export async function POST(req: Request) {
         status: newMatchStatus,
       },
       affectedPlayerIds: allPlayerIds,
-      playerStatus: 'REGISTERED',
     });
   } catch (err: any) {
     console.error('Unexpected error in POST /api/matches/complete:', err);

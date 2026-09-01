@@ -272,8 +272,8 @@ test('COURT MANAGEMENT: Dynamic Court Grid, Match Lifecycle & Player Responses',
     assert.equal(liveMatch.status, 'LIVE', 'Court 3 match must now be LIVE');
   });
 
-  // Test 6: Match completion frees the court back to FREE and resets players to REGISTERED
-  await t.test('6. Match completion frees Court 3 back to FREE and resets players to REGISTERED', async () => {
+  // Test 6: Match completion frees the court back to FREE and resets players to PRESENT
+  await t.test('6. Match completion frees Court 3 back to FREE and resets players to PRESENT', async () => {
     // Complete match with Team 1 winning via backend API
     const res = await fetch(`${baseUrl}/api/matches/complete`, {
       method: 'POST',
@@ -296,11 +296,11 @@ test('COURT MANAGEMENT: Dynamic Court Grid, Match Lifecycle & Player Responses',
       .single();
     assert.equal(completedMatch.status, 'COMPLETED');
 
-    // Verify both players reset to REGISTERED (not QUALIFIED or DISQUALIFIED)
+    // Verify both checked-in players reset to PRESENT (not QUALIFIED or DISQUALIFIED)
     const { data: p1After } = await supabase.from('players').select('status').eq('id', p1.id).single();
     const { data: p2After } = await supabase.from('players').select('status').eq('id', p2.id).single();
-    assert.equal(p1After.status, 'REGISTERED', 'Player 1 must be reset to REGISTERED');
-    assert.equal(p2After.status, 'REGISTERED', 'Player 2 must be reset to REGISTERED');
+    assert.equal(p1After.status, 'PRESENT', 'Player 1 must be reset to PRESENT');
+    assert.equal(p2After.status, 'PRESENT', 'Player 2 must be reset to PRESENT');
 
     // Verify no active live or scheduled match remains on Court 3
     const { data: activeMatches } = await supabase
