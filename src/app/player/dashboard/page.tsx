@@ -3,7 +3,7 @@
 import { useState, useEffect, Suspense, useMemo } from "react";
 import { useSearchParams } from "next/navigation";
 import Link from "next/link";
-import { Bell, MapPin, Clock, CalendarDays, CheckCircle2, XCircle, Trophy } from "lucide-react";
+import { Bell, MapPin, Clock, CalendarDays, CheckCircle2, XCircle, Trophy, RefreshCw } from "lucide-react";
 import { createClient } from "@/utils/supabase/client";
 
 function DashboardContent() {
@@ -15,6 +15,7 @@ function DashboardContent() {
   const [player, setPlayer] = useState<any>(null);
   const [nextMatch, setNextMatch] = useState<any>(null);
   const [isLoading, setIsLoading] = useState(true);
+  const [isRefreshing, setIsRefreshing] = useState(false);
   const [unreadCount, setUnreadCount] = useState<number>(0);
   const [recentAlert, setRecentAlert] = useState<{ message: string; id?: string } | null>(null);
 
@@ -73,9 +74,14 @@ function DashboardContent() {
   };
 
   useEffect(() => {
+    if (!playerId) {
+      setIsLoading(false);
+      return;
+    }
+
     if ("Notification" in window) {
       setNotificationStatus(Notification.permission);
-      if (Notification.permission === 'granted' && playerId) {
+      if (Notification.permission === 'granted') {
         registerAndSaveSubscription();
       }
     }
@@ -99,7 +105,7 @@ function DashboardContent() {
           team2_p2:players!fk_t2p2(id, name)
         `)
         .or(`team1_p1_id.eq.${playerId},team1_p2_id.eq.${playerId},team2_p1_id.eq.${playerId},team2_p2_id.eq.${playerId}`)
-        .in('status', ['SCHEDULED', 'NOTIFIED', 'NO-SHOW PENDING', 'DELAYED'])
+        .in('status', ['SCHEDULED', 'NOTIFIED', 'PLAYER_CONFIRMED', 'READY', 'LIVE', 'DELAYED', 'NO-SHOW PENDING', 'NO_SHOW_PENDING'])
         .order('scheduled_time', { ascending: true })
         .limit(1);
         
@@ -137,27 +143,46 @@ function DashboardContent() {
     loadNotifications();
     
     // Set up real-time subscription for automatic updates without refresh
-    const channelName = `player-dashboard-${playerId}`;
+    const channelName = `player-notifications-${playerId}`;
     const channel = supabase
       .channel(channelName)
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'matches' }, () => {
-        loadDashboard();
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'matches' }, (payload: any) => {
+        const match = payload?.new || payload?.old;
+        if (
+          !match ||
+          match.team1_p1_id === playerId ||
+          match.team1_p2_id === playerId ||
+          match.team2_p1_id === playerId ||
+          match.team2_p2_id === playerId
+        ) {
+          loadDashboard();
+          loadNotifications();
+        }
       })
       .on('postgres_changes', { event: '*', schema: 'public', table: 'players' }, (payload) => {
         if (payload.new && (payload.new as any).id === playerId) {
+          setPlayer(payload.new);
           loadDashboard();
         }
       })
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'notifications', filter: `player_id=eq.${playerId}` }, () => {
-        loadNotifications();
-        loadDashboard();
-      })
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'notifications', filter: `player_id=eq.${playerId}` },
+        (payload) => {
+          if (payload.new && (payload.new as any).message) {
+            setRecentAlert(payload.new as any);
+          }
+          loadNotifications();
+          loadDashboard();
+        }
+      )
       .on('broadcast', { event: 'new-notification' }, (payload: any) => {
         if (payload.payload) {
           setRecentAlert(payload.payload);
           setUnreadCount((prev) => prev + 1);
         }
         loadDashboard();
+        loadNotifications();
       })
       .subscribe();
 
@@ -303,7 +328,47 @@ function DashboardContent() {
           <h2 className="text-xl font-bold">Hi, {player.name.split(' ')[0]} 👋</h2>
           <p className="text-gray-500 text-sm">{player.employee_id} • {player.sport}</p>
         </div>
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-2.5">
+          {/* Manual Refresh Option */}
+          <button
+            onClick={async () => {
+              if (isRefreshing || !playerId) return;
+              setIsRefreshing(true);
+              try {
+                const { data: pData } = await supabase.from('players').select('*').eq('id', playerId).single();
+                if (pData) setPlayer(pData);
+                const { data: mData } = await supabase
+                  .from('matches')
+                  .select(`
+                    id, sport, category, playing_area, scheduled_time, reporting_time, status,
+                    team1_p1:players!fk_t1p1(id, name),
+                    team1_p2:players!fk_t1p2(id, name),
+                    team2_p1:players!fk_t2p1(id, name),
+                    team2_p2:players!fk_t2p2(id, name)
+                  `)
+                  .or(`team1_p1_id.eq.${playerId},team1_p2_id.eq.${playerId},team2_p1_id.eq.${playerId},team2_p2_id.eq.${playerId}`)
+                  .in('status', ['SCHEDULED', 'NOTIFIED', 'PLAYER_CONFIRMED', 'READY', 'LIVE', 'DELAYED', 'NO-SHOW PENDING', 'NO_SHOW_PENDING'])
+                  .order('scheduled_time', { ascending: true })
+                  .limit(1);
+                setNextMatch(mData && mData.length > 0 ? mData[0] : null);
+                const notifRes = await fetch(`/api/player/notifications?playerId=${playerId}`);
+                const notifData = await notifRes.json();
+                if (notifData.unreadCount !== undefined) {
+                  setUnreadCount(notifData.unreadCount);
+                }
+              } catch (err) {
+                console.error('Error refreshing dashboard:', err);
+              } finally {
+                setIsRefreshing(false);
+              }
+            }}
+            disabled={isRefreshing}
+            className="p-2.5 rounded-2xl bg-gray-100 dark:bg-zinc-800 text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-zinc-700 transition-all disabled:opacity-50"
+            title="Refresh dashboard"
+          >
+            <RefreshCw className={`w-5 h-5 ${isRefreshing ? 'animate-spin' : ''}`} />
+          </button>
+
           {/* Notification Bell with Real-time Count Badge */}
           <Link
             href={`/player/notifications?id=${playerId}`}

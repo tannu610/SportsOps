@@ -197,12 +197,33 @@ export async function POST(req: Request) {
           };
 
           const channel = supabase.channel(`player-notifications-${pid}`);
-          await channel.send({
-            type: 'broadcast',
-            event: 'new-notification',
-            payload
+          await new Promise((resolve) => {
+            channel.subscribe((status) => {
+              if (status === 'SUBSCRIBED') {
+                channel
+                  .send({
+                    type: 'broadcast',
+                    event: 'new-notification',
+                    payload
+                  })
+                  .then(() => {
+                    supabase.removeChannel(channel);
+                    resolve(true);
+                  })
+                  .catch(() => {
+                    supabase.removeChannel(channel);
+                    resolve(false);
+                  });
+              } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
+                supabase.removeChannel(channel);
+                resolve(false);
+              }
+            });
+            setTimeout(() => {
+              supabase.removeChannel(channel);
+              resolve(false);
+            }, 1000);
           });
-          supabase.removeChannel(channel);
         }
       } catch (broadcastErr) {
         console.error('Error broadcasting realtime notifications:', broadcastErr);

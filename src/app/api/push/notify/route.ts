@@ -37,28 +37,42 @@ export async function POST(req: Request) {
 
     const messageText = `Your ${match.sport} match at ${match.playing_area} is starting soon. Please report immediately.`;
 
-    // 1. Always create notification records in DB for all players
-    const notificationInserts = playerIds.map(pid => ({
-      player_id: pid,
-      match_id: match.id,
-      type: 'MATCH_CALLED',
-      message: messageText,
-      read: false
-    }));
-
-    const { data: insertedNotifs, error: notifErr } = await supabase
+    // 1. Fetch existing or create notification records in DB for all players
+    const { data: existingNotifs } = await supabase
       .from('notifications')
-      .insert(notificationInserts)
-      .select();
+      .select('*')
+      .eq('match_id', match.id);
 
-    if (notifErr) {
-      console.error('Error inserting notifications in push/notify:', notifErr);
+    let finalNotifs = existingNotifs || [];
+    const missingPlayerIds = playerIds.filter(
+      (pid) => !finalNotifs.some((n) => n.player_id === pid)
+    );
+
+    if (missingPlayerIds.length > 0) {
+      const notificationInserts = missingPlayerIds.map((pid) => ({
+        player_id: pid,
+        match_id: match.id,
+        type: 'MATCH_CALLED',
+        message: messageText,
+        read: false
+      }));
+
+      const { data: newlyInserted, error: notifErr } = await supabase
+        .from('notifications')
+        .insert(notificationInserts)
+        .select();
+
+      if (notifErr) {
+        console.error('Error inserting notifications in push/notify:', notifErr);
+      } else if (newlyInserted) {
+        finalNotifs = [...finalNotifs, ...newlyInserted];
+      }
     }
 
     // 2. Broadcast via Supabase Realtime channel for instant in-app update
     try {
       for (const pid of playerIds) {
-        const notif = insertedNotifs?.find(n => n.player_id === pid);
+        const notif = finalNotifs.find((n) => n.player_id === pid);
         const payload = notif || {
           id: `gen-${Date.now()}-${pid}`,
           player_id: pid,
@@ -70,12 +84,33 @@ export async function POST(req: Request) {
         };
 
         const channel = supabase.channel(`player-notifications-${pid}`);
-        await channel.send({
-          type: 'broadcast',
-          event: 'new-notification',
-          payload
+        await new Promise((resolve) => {
+          channel.subscribe((status) => {
+            if (status === 'SUBSCRIBED') {
+              channel
+                .send({
+                  type: 'broadcast',
+                  event: 'new-notification',
+                  payload
+                })
+                .then(() => {
+                  supabase.removeChannel(channel);
+                  resolve(true);
+                })
+                .catch(() => {
+                  supabase.removeChannel(channel);
+                  resolve(false);
+                });
+            } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
+              supabase.removeChannel(channel);
+              resolve(false);
+            }
+          });
+          setTimeout(() => {
+            supabase.removeChannel(channel);
+            resolve(false);
+          }, 1000);
         });
-        supabase.removeChannel(channel);
       }
     } catch (broadcastErr) {
       console.error('Error broadcasting realtime notifications:', broadcastErr);
@@ -105,7 +140,7 @@ export async function POST(req: Request) {
       success: true,
       count: playerIds.length,
       pushCount: subscriptions.length,
-      notifications: insertedNotifs
+      notifications: finalNotifs
     });
   } catch (err: any) {
     console.error('Push notify error:', err);

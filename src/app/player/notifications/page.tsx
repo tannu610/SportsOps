@@ -3,7 +3,7 @@
 import { useState, useEffect, Suspense, useMemo } from "react";
 import { useSearchParams } from "next/navigation";
 import Link from "next/link";
-import { ArrowLeft, Bell, Check, Clock, Trophy, CheckCheck, Inbox } from "lucide-react";
+import { ArrowLeft, Bell, Check, Clock, Trophy, CheckCheck, Inbox, RefreshCw } from "lucide-react";
 import { createClient } from "@/utils/supabase/client";
 
 interface NotificationItem {
@@ -25,6 +25,7 @@ function NotificationsContent() {
   const [notifications, setNotifications] = useState<NotificationItem[]>([]);
   const [unreadCount, setUnreadCount] = useState<number>(0);
   const [isLoading, setIsLoading] = useState<boolean>(true);
+  const [isRefreshing, setIsRefreshing] = useState<boolean>(false);
   const [filter, setFilter] = useState<'all' | 'unread'>('all');
 
   // Sync playerId from URL searchParams or localStorage
@@ -39,6 +40,15 @@ function NotificationsContent() {
       if (stored) setPlayerId(stored);
     }
   }, [rawId]);
+
+  // Helper to check duplicate notifications
+  const isDuplicateNotification = (list: NotificationItem[], item: NotificationItem) => {
+    return list.some(
+      (n) =>
+        n.id === item.id ||
+        (n.match_id && item.match_id && n.match_id === item.match_id && n.player_id === item.player_id)
+    );
+  };
 
   // Initial load of notifications
   useEffect(() => {
@@ -75,13 +85,11 @@ function NotificationsContent() {
 
     // 1. Listen for instant broadcast events sent by the server
     channel.on('broadcast', { event: 'new-notification' }, (payload: any) => {
-      const incoming = payload.payload;
+      const incoming = payload.payload as NotificationItem;
       if (!incoming) return;
 
       setNotifications((prev) => {
-        // Prevent duplicates
-        const exists = prev.some((n) => n.id === incoming.id);
-        if (exists) return prev;
+        if (isDuplicateNotification(prev, incoming)) return prev;
         return [incoming, ...prev];
       });
 
@@ -104,8 +112,7 @@ function NotificationsContent() {
         if (!newRecord) return;
 
         setNotifications((prev) => {
-          const exists = prev.some((n) => n.id === newRecord.id);
-          if (exists) return prev;
+          if (isDuplicateNotification(prev, newRecord)) return prev;
           return [newRecord, ...prev];
         });
 
@@ -148,17 +155,26 @@ function NotificationsContent() {
         schema: 'public',
         table: 'matches'
       },
-      async () => {
-        // Re-fetch notifications in background to keep in sync
-        try {
-          const res = await fetch(`/api/player/notifications?playerId=${playerId}`);
-          const data = await res.json();
-          if (data.notifications) {
-            setNotifications(data.notifications);
-            setUnreadCount(data.unreadCount || 0);
+      async (payload: any) => {
+        const match = payload?.new || payload?.old;
+        if (
+          !match ||
+          match.team1_p1_id === playerId ||
+          match.team1_p2_id === playerId ||
+          match.team2_p1_id === playerId ||
+          match.team2_p2_id === playerId
+        ) {
+          // Re-fetch notifications in background to keep in sync
+          try {
+            const res = await fetch(`/api/player/notifications?playerId=${playerId}`);
+            const data = await res.json();
+            if (data.notifications) {
+              setNotifications(data.notifications);
+              setUnreadCount(data.unreadCount || 0);
+            }
+          } catch (err) {
+            console.error('Error refreshing notifications:', err);
           }
-        } catch (err) {
-          console.error('Error refreshing notifications:', err);
         }
       }
     );
@@ -251,14 +267,39 @@ function NotificationsContent() {
         >
           <ArrowLeft className="w-4 h-4" /> Back to Dashboard
         </Link>
-        {unreadCount > 0 && (
+        <div className="flex items-center gap-3">
           <button
-            onClick={() => markAsRead()}
-            className="text-xs font-bold text-blue-600 hover:text-blue-700 flex items-center gap-1"
+            onClick={async () => {
+              if (isRefreshing || !playerId) return;
+              setIsRefreshing(true);
+              try {
+                const res = await fetch(`/api/player/notifications?playerId=${playerId}`);
+                const data = await res.json();
+                if (data.notifications) {
+                  setNotifications(data.notifications);
+                  setUnreadCount(data.unreadCount || 0);
+                }
+              } catch (err) {
+                console.error('Error refreshing notifications:', err);
+              } finally {
+                setIsRefreshing(false);
+              }
+            }}
+            disabled={isRefreshing}
+            className="text-xs font-bold text-gray-500 hover:text-gray-700 dark:hover:text-gray-300 flex items-center gap-1 disabled:opacity-50"
+            title="Refresh notifications"
           >
-            <CheckCheck className="w-3.5 h-3.5" /> Mark all read
+            <RefreshCw className={`w-3.5 h-3.5 ${isRefreshing ? 'animate-spin' : ''}`} /> Refresh
           </button>
-        )}
+          {unreadCount > 0 && (
+            <button
+              onClick={() => markAsRead()}
+              className="text-xs font-bold text-blue-600 hover:text-blue-700 flex items-center gap-1"
+            >
+              <CheckCheck className="w-3.5 h-3.5" /> Mark all read
+            </button>
+          )}
+        </div>
       </div>
 
       <div className="flex items-center justify-between">
