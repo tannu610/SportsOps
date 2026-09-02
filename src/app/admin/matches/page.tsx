@@ -366,11 +366,37 @@ export default function PlayAreaManagementPage() {
 
   // Start match LIVE immediately
   const startMatchLive = async (matchId: string) => {
+    const targetMatch = matches.find((m) => m.id === matchId);
+    const targetPlayerIds = [
+      targetMatch?.team1_p1?.id,
+      targetMatch?.team1_p2?.id,
+      targetMatch?.team2_p1?.id,
+      targetMatch?.team2_p2?.id,
+    ].filter(Boolean) as string[];
+
     // Optimistic UI update
     setMatches((prev) => prev.map((m) => (m.id === matchId ? { ...m, status: "LIVE" } : m)));
-    const { error } = await supabase.from("matches").update({ status: "LIVE" }).eq("id", matchId);
-    if (error) {
-      alert("Error starting match live: " + error.message);
+    if (targetPlayerIds.length > 0) {
+      setPlayers((prev) =>
+        prev.map((p) =>
+          targetPlayerIds.includes(p.id) ? { ...p, previous_status: p.status, status: "PLAYING" } : p
+        )
+      );
+    }
+
+    try {
+      const res = await fetch("/api/matches/start-live", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ matchId }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || "Failed to start match live");
+      }
+      loadAllData();
+    } catch (err: any) {
+      alert("Error starting match live: " + err.message);
       loadAllData();
     }
   };

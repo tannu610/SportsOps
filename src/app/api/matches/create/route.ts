@@ -88,6 +88,21 @@ export async function POST(req: Request) {
     inFlightFixtureLocks.add(fixtureKey);
 
     try {
+      // 1. Defense-in-depth: Check if any selected player is currently PLAYING in a live match
+      const { data: playingPlayers, error: playingErr } = await supabase
+        .from('players')
+        .select('id, name, status')
+        .in('id', playerIds)
+        .eq('status', 'PLAYING');
+
+      if (playingPlayers && playingPlayers.length > 0) {
+        const names = playingPlayers.map(p => p.name).join(', ');
+        return NextResponse.json(
+          { error: `Player conflict: ${names} is currently playing in a live match (PLAYING) and cannot be selected for another match.` },
+          { status: 409 }
+        );
+      }
+
       // 2. Query database for any active matches at the same scheduled time
       const { data: activeMatchesAtTime, error: searchError } = await supabase
         .from('matches')

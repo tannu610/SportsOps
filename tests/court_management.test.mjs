@@ -58,7 +58,8 @@ test('COURT MANAGEMENT: Dynamic Court Grid, Match Lifecycle & Player Responses',
           name,
           sport: 'Badminton',
           category: "Men's Singles",
-          status: 'PRESENT'
+          status: 'PRESENT',
+          check_in_time: new Date().toISOString()
         }
       ])
       .select()
@@ -258,18 +259,27 @@ test('COURT MANAGEMENT: Dynamic Court Grid, Match Lifecycle & Player Responses',
     assert.equal(matchData.status, 'PLAYER_UNAVAILABLE', 'Match status should flag PLAYER_UNAVAILABLE');
   });
 
-  // Test 5: START LIVE changes SCHEDULED → LIVE
-  await t.test('5. START LIVE changes match status on Court 3 from SCHEDULED to LIVE', async () => {
-    // Admin clicks START LIVE
-    const { error } = await supabase
-      .from('matches')
-      .update({ status: 'LIVE' })
-      .eq('id', createdMatchId);
-    assert.ifError(error);
+  // Test 5: START LIVE changes match to LIVE and players to PLAYING
+  await t.test('5. START LIVE changes match status on Court 3 to LIVE and players to PLAYING', async () => {
+    // Admin clicks START LIVE via backend endpoint
+    const res = await fetch(`${baseUrl}/api/matches/start-live`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ matchId: createdMatchId }),
+    });
+    const data = await res.json();
+    assert.equal(res.status, 200, `Start live failed: ${JSON.stringify(data)}`);
+    assert.equal(data.success, true);
 
     // Verify match status in Supabase is LIVE
     const { data: liveMatch } = await supabase.from('matches').select('status').eq('id', createdMatchId).single();
     assert.equal(liveMatch.status, 'LIVE', 'Court 3 match must now be LIVE');
+
+    // Verify players in Supabase are PLAYING
+    const { data: p1Live } = await supabase.from('players').select('status').eq('id', p1.id).single();
+    const { data: p2Live } = await supabase.from('players').select('status').eq('id', p2.id).single();
+    assert.equal(p1Live.status, 'PLAYING', 'Player 1 must be PLAYING');
+    assert.equal(p2Live.status, 'PLAYING', 'Player 2 must be PLAYING');
   });
 
   // Test 6: Match completion frees the court back to FREE and resets players to PRESENT

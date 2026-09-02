@@ -7,7 +7,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "test": "node --test --test-concurrency=1 tests/match_completion_status.test.mjs tests/duplicate_matches.test.mjs tests/realtime_notifications.test.mjs tests/event_configuration.test.mjs tests/event_configuration_db.test.mjs tests/court_management.test.mjs tests/dashboard_stats.test.mjs",
+    "test": "node --test --test-concurrency=1 tests/player_playing_live_matches.test.mjs tests/match_completion_status.test.mjs tests/duplicate_matches.test.mjs tests/realtime_notifications.test.mjs tests/event_configuration.test.mjs tests/event_configuration_db.test.mjs tests/court_management.test.mjs tests/dashboard_stats.test.mjs",
     "test:db": "node scratch/check_db.mjs"
   },
   "dependencies": {
