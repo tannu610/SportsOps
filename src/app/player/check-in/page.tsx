@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { Search, Phone, ArrowRight } from "lucide-react";
 import { createClient } from "@/utils/supabase/client";
@@ -23,12 +24,41 @@ export default function CheckInPage() {
     
     const searchId = empId.toUpperCase().trim();
     
-    // 1. Check if player exists
-    const { data: players, error: searchErr } = await supabase
-      .from('players')
-      .select('id, employee_id, status, contact_info')
-      .eq('employee_id', searchId)
-      .limit(1);
+    // 1. Check if player exists (by Employee ID or Player Code)
+    let players: any[] | null = null;
+    let searchErr: any = null;
+
+    if (searchId.startsWith('SO-')) {
+      const { data, error: err } = await supabase
+        .from('players')
+        .select('id, employee_id, status, contact_info')
+        .or(`player_code.eq.${searchId},employee_id.eq.${searchId}`)
+        .limit(1);
+      players = data;
+      searchErr = err;
+
+      // Fallback if player_code column not in PostgREST schema cache yet
+      if (searchErr && (searchErr.code === 'PGRST204' || searchErr.message?.includes('column'))) {
+        const { data: allPlayers } = await supabase
+          .from('players')
+          .select('id, employee_id, status, contact_info, push_subscription');
+        if (allPlayers) {
+          players = allPlayers.filter((p: any) =>
+            p.employee_id?.toUpperCase() === searchId ||
+            p.push_subscription?._metadata?.player_code?.toUpperCase() === searchId
+          );
+          searchErr = null;
+        }
+      }
+    } else {
+      const { data, error: err } = await supabase
+        .from('players')
+        .select('id, employee_id, status, contact_info')
+        .eq('employee_id', searchId)
+        .limit(1);
+      players = data;
+      searchErr = err;
+    }
       
     if (searchErr) {
       setError("Database error. Please try again.");
@@ -134,6 +164,15 @@ export default function CheckInPage() {
             {!isLoading && <ArrowRight className="w-4 h-4" />}
           </button>
         </form>
+
+        <div className="pt-3 border-t border-gray-100 dark:border-zinc-800 text-center">
+          <Link
+            href="/player/register"
+            className="text-xs font-semibold text-blue-600 dark:text-blue-400 hover:text-blue-700 dark:hover:text-blue-300 hover:underline inline-flex items-center gap-1 transition-colors"
+          >
+            Not registered? Register New Player
+          </Link>
+        </div>
       </div>
     </div>
   );

@@ -69,10 +69,15 @@ CREATE TABLE IF NOT EXISTS players (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   event_id UUID REFERENCES events(id) ON DELETE CASCADE,
   employee_id TEXT NOT NULL,
+  player_code TEXT,
   name TEXT NOT NULL,
+  gender TEXT,
   sport TEXT NOT NULL,
   category TEXT DEFAULT 'NA',
   contact_info TEXT,
+  email TEXT,
+  transport_required BOOLEAN DEFAULT FALSE,
+  source TEXT DEFAULT 'IMPORT',
   status TEXT DEFAULT 'REGISTERED',
   previous_status TEXT,
   current_round INTEGER DEFAULT 1,
@@ -128,6 +133,9 @@ CREATE TABLE IF NOT EXISTS notifications (
 
 CREATE INDEX IF NOT EXISTS idx_players_event ON players(event_id);
 CREATE INDEX IF NOT EXISTS idx_players_employee_id ON players(employee_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_players_player_code ON players(player_code) WHERE player_code IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_players_source ON players(source);
+CREATE INDEX IF NOT EXISTS idx_players_gender ON players(gender);
 CREATE INDEX IF NOT EXISTS idx_players_status ON players(status);
 CREATE INDEX IF NOT EXISTS idx_matches_event ON matches(event_id);
 CREATE INDEX IF NOT EXISTS idx_matches_status ON matches(status);

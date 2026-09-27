@@ -7,6 +7,7 @@ webpush.setVapidDetails(
 )
 
 export async function sendPushNotification(subscription: webpush.PushSubscription, payload: string) {
+  if (!subscription || !subscription.endpoint) return;
   try {
     await webpush.sendNotification(subscription, payload)
   } catch (error) {

@@ -5,6 +5,7 @@ import { useSearchParams } from "next/navigation";
 import Link from "next/link";
 import { Bell, MapPin, Clock, CalendarDays, CheckCircle2, XCircle, Trophy, RefreshCw } from "lucide-react";
 import { createClient } from "@/utils/supabase/client";
+import { extractPlayerCode } from "@/utils/playerCode";
 
 function DashboardContent() {
   const supabase = useMemo(() => createClient(), []);
@@ -326,7 +327,12 @@ function DashboardContent() {
       <div className="flex justify-between items-center bg-white dark:bg-zinc-900 p-4 rounded-2xl shadow-sm border border-gray-100 dark:border-zinc-800">
         <div>
           <h2 className="text-xl font-bold">Hi, {player.name.split(' ')[0]} 👋</h2>
-          <p className="text-gray-500 text-sm">{player.employee_id} • {player.sport}</p>
+          <p className="text-gray-500 text-sm">{player.sport}</p>
+          {extractPlayerCode(player) && (
+            <p className="text-xs font-mono font-semibold text-blue-600 dark:text-blue-400 mt-0.5">
+              Player Code: {extractPlayerCode(player)}
+            </p>
+          )}
         </div>
         <div className="flex items-center gap-2.5">
           {/* Manual Refresh Option */}

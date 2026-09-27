@@ -245,6 +245,7 @@ export default function PlayAreaManagementPage() {
     if (empMatches.length === 0) return null;
 
     let p = empMatches.find((pl) => (pl.category || "").toLowerCase() === matchCategory.toLowerCase());
+    if (!p) p = empMatches.find((pl) => (pl.category || "").toLowerCase().includes(matchCategory.toLowerCase()));
     if (!p) p = empMatches.find((pl) => pl.sport.toLowerCase() === matchCategory.toLowerCase());
     if (!p) p = empMatches.find((pl) => pl.sport.toLowerCase().includes(matchCategory.toLowerCase()));
     if (!p) p = empMatches.find((pl) => pl.sport.toLowerCase().includes(matchSport.toLowerCase()));
@@ -585,6 +586,7 @@ export default function PlayAreaManagementPage() {
   const eligiblePlayers = players.filter((p) => {
     const matchesCategory =
       p.category === formCategory ||
+      (p.category && p.category.includes(formCategory)) ||
       p.sport === formCategory ||
       p.sport === `${formSport} - ${formCategory}` ||
       p.sport === formSport;

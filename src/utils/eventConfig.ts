@@ -122,3 +122,25 @@ export function validateEventConfigPayload(payload: {
 
   return { valid: true };
 }
+
+/**
+ * Determines whether a sport category is applicable to a player's gender.
+ * - Categories specific to women (e.g. "Women's Singles", "Women's Doubles", "Girls", "Ladies") are only for Female.
+ * - Categories specific to men (e.g. "Men's Singles", "Men's Doubles", "Boys") are only for Male.
+ * - Neutral/inclusive categories (e.g. "Mixed Doubles", "Mixed", "Open", "Singles", "Doubles", "Box Cricket") are applicable to both Male and Female.
+ */
+export function isCategoryApplicableToGender(categoryName: string, gender: 'Male' | 'Female'): boolean {
+  if (!categoryName || typeof categoryName !== 'string') return false;
+  const lower = categoryName.trim().toLowerCase();
+
+  const isFemaleSpecific = /\bwomen('?s)?\b|\bfemale\b|\bgirls?\b|\bladies\b/i.test(lower);
+  const isMaleSpecific = (/\bmen('?s)?\b|\bmale\b|\bboys?\b/i.test(lower)) && !isFemaleSpecific;
+
+  if (gender === 'Male') {
+    return !isFemaleSpecific;
+  }
+  if (gender === 'Female') {
+    return !isMaleSpecific;
+  }
+  return true;
+}

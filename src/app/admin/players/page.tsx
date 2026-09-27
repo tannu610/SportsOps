@@ -4,10 +4,14 @@ import { useState, useEffect, useMemo } from "react";
 import { Upload, Download, Search, Plus, CheckCircle, AlertTriangle, X, Filter } from "lucide-react";
 import * as XLSX from "xlsx";
 import { createClient } from "@/utils/supabase/client";
+import { extractPlayerCode } from "@/utils/playerCode";
 
 type PlayerRecord = {
   id: string; // Employee ID
   dbId?: string; // DB UUID
+  playerCode: string;
+  gender: string;
+  source: string;
   name: string;
   sport: string;
   category: string;
@@ -31,47 +35,71 @@ export default function PlayersPage() {
   const [eventId, setEventId] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState("ALL");
+  const [sourceFilter, setSourceFilter] = useState("ALL");
   
   const supabase = createClient();
 
-  useEffect(() => {
-    async function loadData() {
-      setIsLoading(true);
-      let { data: events } = await supabase.from('events').select('*').limit(1);
-      let currentEventId;
-      
-      if (!events || events.length === 0) {
-        const { data: newEvent } = await supabase.from('events').insert([
-          { name: 'Annual Sports Day 2026', sport: 'Multi-Sport', event_date: '2026-09-15', venue: 'HQ Sports Complex' }
-        ]).select().single();
-        if (newEvent) currentEventId = newEvent.id;
-      } else {
-        currentEventId = events[0].id;
-      }
-      
-      if (currentEventId) {
-        setEventId(currentEventId);
-        const { data: dbPlayers } = await supabase
-          .from('players')
-          .select('*')
-          .eq('event_id', currentEventId)
-          .order('created_at', { ascending: false });
-          
-        if (dbPlayers) {
-          setPlayers(dbPlayers.map(p => ({
+  const loadData = async () => {
+    setIsLoading(true);
+    let { data: events } = await supabase.from('events').select('*').limit(1);
+    let currentEventId;
+    
+    if (!events || events.length === 0) {
+      const { data: newEvent } = await supabase.from('events').insert([
+        { name: 'Annual Sports Day 2026', sport: 'Multi-Sport', event_date: '2026-09-15', venue: 'HQ Sports Complex' }
+      ]).select().single();
+      if (newEvent) currentEventId = newEvent.id;
+    } else {
+      currentEventId = events[0].id;
+    }
+    
+    if (currentEventId) {
+      setEventId(currentEventId);
+      const { data: dbPlayers } = await supabase
+        .from('players')
+        .select('*')
+        .eq('event_id', currentEventId)
+        .order('created_at', { ascending: false });
+        
+      if (dbPlayers) {
+        const mapped = dbPlayers.map(p => {
+          const playerCode = extractPlayerCode(p) || "-";
+          const gender = p.gender || p.push_subscription?._metadata?.gender || "-";
+          const source = p.source || p.push_subscription?._metadata?.source || (p.employee_id?.startsWith("WALK") ? "WALK-IN" : "IMPORT");
+
+          return {
             id: p.employee_id,
             dbId: p.id,
+            playerCode,
+            gender,
+            source,
             name: p.name,
             sport: p.sport,
             category: p.category || 'NA',
             round: p.current_round ? `Round ${p.current_round}` : 'Round 1',
             status: p.status,
             checkIn: p.check_in_time || "-"
-          })));
+          };
+        });
+        setPlayers(mapped);
+
+        // Auto-backfill check: if any existing players are missing player codes, backfill them
+        if (mapped.some(p => !p.playerCode || p.playerCode === "-")) {
+          fetch('/api/admin/players/backfill', { method: 'POST' })
+            .then(res => res.json())
+            .then(res => {
+              if (res.updatedCount > 0) {
+                loadData();
+              }
+            })
+            .catch(err => console.error("Auto backfill error:", err));
         }
       }
-      setIsLoading(false);
     }
+    setIsLoading(false);
+  };
+
+  useEffect(() => {
     loadData();
 
     const channel = supabase
@@ -106,6 +134,7 @@ export default function PlayersPage() {
           const sport = row['Sport'] || row['sport'];
           const category = row['Category'] || row['category'] || 'NA';
           const contact = row['Contact'] || row['Mobile'] || row['Phone'];
+          const gender = row['Gender'] || row['gender'] || null;
 
           if (!empId) errors.push(`Row ${index + 2}: Missing Employee ID`);
           else if (!name) errors.push(`Row ${index + 2}: Missing Player Name (${empId})`);
@@ -116,7 +145,7 @@ export default function PlayersPage() {
             } else if (players.some(p => p.id === empId && p.sport === sport && p.category === category)) {
               errors.push(`Row ${index + 2}: Employee ID (${empId}) already exists for sport ${sport} - ${category} in the system`);
             } else {
-              validRecords.push({ empId, name, sport, category, contact });
+              validRecords.push({ empId, name, sport, category, contact, gender });
             }
           }
         });
@@ -132,41 +161,41 @@ export default function PlayersPage() {
   const confirmImport = async () => {
     if (!importSummary || !eventId) return;
     
-    const insertData = importSummary.parsedData.map(r => ({
-      event_id: eventId,
-      employee_id: r.empId,
-      name: r.name,
-      sport: r.sport,
-      category: r.category,
-      current_round: 1,
-      contact_info: r.contact ? String(r.contact) : null,
-      status: 'REGISTERED'
-    }));
+    try {
+      const res = await fetch('/api/admin/players/import', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          eventId,
+          records: importSummary.parsedData
+        })
+      });
 
-    const { data: insertedData, error } = await supabase.from('players').insert(insertData).select();
+      const result = await res.json();
+      if (!res.ok || result.error) {
+        alert(`Import Error: ${result.error || 'Failed to import players'}`);
+        return;
+      }
 
-    if (error) {
-      alert(`Database Error: ${error.message}`);
-      return;
+      await loadData();
+      setImportSummary(null);
+      setIsUploading(false);
+    } catch (err: any) {
+      alert(`Import Request Error: ${err.message}`);
     }
-    
-    if (insertedData) {
-      const newPlayers = insertedData.map(p => ({
-        id: p.employee_id, dbId: p.id, name: p.name, sport: p.sport, category: p.category || 'NA', round: p.current_round ? `Round ${p.current_round}` : 'Round 1', status: p.status, checkIn: p.check_in_time || "-"
-      }));
-      setPlayers([...newPlayers, ...players]);
-    }
-    setImportSummary(null);
-    setIsUploading(false);
   };
 
   const filteredPlayers = useMemo(() => {
     return players.filter(p => {
-      const matchesSearch = p.name.toLowerCase().includes(searchQuery.toLowerCase()) || p.id.toLowerCase().includes(searchQuery.toLowerCase());
+      const matchesSearch =
+        p.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
+        p.id.toLowerCase().includes(searchQuery.toLowerCase()) ||
+        p.playerCode.toLowerCase().includes(searchQuery.toLowerCase());
       const matchesStatus = statusFilter === "ALL" || p.status === statusFilter;
-      return matchesSearch && matchesStatus;
+      const matchesSource = sourceFilter === "ALL" || p.source === sourceFilter;
+      return matchesSearch && matchesStatus && matchesSource;
     });
-  }, [players, searchQuery, statusFilter]);
+  }, [players, searchQuery, statusFilter, sourceFilter]);
 
   const uniqueStatuses = Array.from(new Set(players.map(p => p.status)));
 
@@ -184,7 +213,7 @@ export default function PlayersPage() {
       <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
         <div>
           <h1 className="text-2xl font-bold tracking-tight">Players & Import</h1>
-          <p className="text-sm text-gray-500">Manage registered players and their attendance status.</p>
+          <p className="text-sm text-gray-500">Manage registered players, track walk-in registrations, and update attendance.</p>
         </div>
         
         <div className="flex gap-3 w-full sm:w-auto">
@@ -205,7 +234,7 @@ export default function PlayersPage() {
           {!importSummary ? (
             <>
               <h3 className="font-semibold text-blue-900 dark:text-blue-300 mb-2">Import from MS Teams Forms</h3>
-              <p className="text-sm text-blue-700 dark:text-blue-400 mb-4">Upload the Excel or CSV export. Columns: 'Employee ID', 'Name', 'Sport', 'Mobile' (optional).</p>
+              <p className="text-sm text-blue-700 dark:text-blue-400 mb-4">Upload the Excel or CSV export. Columns: 'Employee ID', 'Name', 'Sport', 'Mobile' (optional), 'Gender' (optional).</p>
               <div className="flex items-center justify-center w-full">
                 <label className="flex flex-col items-center justify-center w-full h-32 border-2 border-blue-400 border-dashed rounded-lg cursor-pointer bg-white dark:bg-zinc-900 hover:bg-blue-100/50 transition-colors">
                   <div className="flex flex-col items-center justify-center pt-5 pb-6">
@@ -236,12 +265,27 @@ export default function PlayersPage() {
           <div className="relative">
             <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
             <input 
-              type="text" placeholder="Search players..." 
+              type="text" placeholder="Search by name, EMP ID, or Player Code..." 
               value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)}
-              className="pl-9 pr-4 py-2 border border-gray-300 dark:border-zinc-700 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white dark:bg-zinc-950 w-64"
+              className="pl-9 pr-4 py-2 border border-gray-300 dark:border-zinc-700 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white dark:bg-zinc-950 w-72"
             />
           </div>
           <div className="flex items-center gap-3">
+            {/* Source Filter */}
+            <div className="flex items-center gap-2">
+              <span className="text-xs text-gray-500 font-medium">Source:</span>
+              <select 
+                value={sourceFilter} 
+                onChange={(e) => setSourceFilter(e.target.value)}
+                className="py-1.5 px-3 border border-gray-300 dark:border-zinc-700 rounded-lg text-sm bg-white dark:bg-zinc-950 focus:outline-none focus:ring-2 focus:ring-blue-500"
+              >
+                <option value="ALL">All Sources</option>
+                <option value="IMPORT">IMPORT</option>
+                <option value="WALK-IN">WALK-IN</option>
+              </select>
+            </div>
+
+            {/* Status Filter */}
             <div className="flex items-center gap-2">
               <Filter className="w-4 h-4 text-gray-500" />
               <select 
@@ -253,6 +297,7 @@ export default function PlayersPage() {
                 {uniqueStatuses.map(s => <option key={s} value={s}>{s}</option>)}
               </select>
             </div>
+
             <div className="text-sm text-gray-500 font-medium border-l pl-3 border-gray-300 dark:border-zinc-700">
               Total: {filteredPlayers.length}
             </div>
@@ -269,8 +314,11 @@ export default function PlayersPage() {
               <thead className="bg-gray-50 dark:bg-zinc-950 text-gray-600 dark:text-gray-400 border-b border-gray-200 dark:border-zinc-800">
                 <tr>
                   <th className="px-4 py-3 font-medium">EMP ID</th>
+                  <th className="px-4 py-3 font-medium">Player Code</th>
                   <th className="px-4 py-3 font-medium">Name</th>
-                  <th className="px-4 py-3 font-medium">Sport</th>
+                  <th className="px-4 py-3 font-medium">Gender</th>
+                  <th className="px-4 py-3 font-medium">Sport / Category</th>
+                  <th className="px-4 py-3 font-medium">Source</th>
                   <th className="px-4 py-3 font-medium">Status</th>
                   <th className="px-4 py-3 font-medium">Check-In Time</th>
                 </tr>
@@ -278,9 +326,23 @@ export default function PlayersPage() {
               <tbody className="divide-y divide-gray-200 dark:divide-zinc-800">
                 {filteredPlayers.map((player) => (
                   <tr key={player.dbId || player.id} className="hover:bg-gray-50 dark:hover:bg-zinc-900/50">
-                    <td className="px-4 py-3 font-medium">{player.id}</td>
-                    <td className="px-4 py-3">{player.name}</td>
-                    <td className="px-4 py-3">{player.sport}</td>
+                    <td className="px-4 py-3 font-medium font-mono text-xs">{player.id}</td>
+                    <td className="px-4 py-3 font-bold font-mono text-xs text-blue-600 dark:text-blue-400">{player.playerCode}</td>
+                    <td className="px-4 py-3 font-medium text-gray-900 dark:text-gray-100">{player.name}</td>
+                    <td className="px-4 py-3 text-xs text-gray-600 dark:text-gray-300">{player.gender}</td>
+                    <td className="px-4 py-3 text-xs">
+                      <span className="font-semibold text-gray-800 dark:text-gray-200">{player.sport}</span>
+                      <span className="text-gray-500 dark:text-gray-400 block">{player.category}</span>
+                    </td>
+                    <td className="px-4 py-3">
+                      <span className={`px-2 py-0.5 rounded-full text-[11px] font-bold tracking-wide uppercase ${
+                        player.source === 'WALK-IN'
+                          ? 'bg-emerald-100 dark:bg-emerald-950/60 text-emerald-800 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800'
+                          : 'bg-gray-100 dark:bg-zinc-800 text-gray-700 dark:text-zinc-300'
+                      }`}>
+                        {player.source}
+                      </span>
+                    </td>
                     <td className="px-4 py-3">
                       <select 
                         value={player.status}
