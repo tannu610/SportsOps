@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useMemo } from "react";
-import { Upload, Download, Search, Plus, CheckCircle, AlertTriangle, X, Filter } from "lucide-react";
+import { Upload, Download, Search, Plus, CheckCircle, AlertTriangle, X, Filter, RotateCcw } from "lucide-react";
 import * as XLSX from "xlsx";
 import { createClient } from "@/utils/supabase/client";
 import { extractPlayerCode, extractPlayerSource } from "@/utils/playerCode";
@@ -36,6 +36,10 @@ export default function PlayersPage() {
   const [searchQuery, setSearchQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState("ALL");
   const [sourceFilter, setSourceFilter] = useState("ALL");
+  const [genderFilter, setGenderFilter] = useState("ALL");
+  const [sportFilter, setSportFilter] = useState("ALL");
+  const [categoryFilter, setCategoryFilter] = useState("ALL");
+  const [eventSportsMap, setEventSportsMap] = useState<Record<string, string[]>>({});
   
   const supabase = createClient();
 
@@ -55,13 +59,63 @@ export default function PlayersPage() {
     
     if (currentEventId) {
       setEventId(currentEventId);
+
+      // Fetch dynamic event configuration (sports & categories) for the active event
+      const sportsMap: Record<string, string[]> = {};
+
+      try {
+        const { data: relSports } = await supabase
+          .from('event_sports')
+          .select('sport, event_categories(category)')
+          .eq('event_id', currentEventId);
+
+        if (relSports && relSports.length > 0) {
+          relSports.forEach((rs: any) => {
+            const sName = rs.sport;
+            const cats = Array.isArray(rs.event_categories)
+              ? rs.event_categories.map((c: any) => c.category)
+              : rs.event_categories
+              ? [rs.event_categories.category]
+              : [];
+            sportsMap[sName] = cats;
+          });
+        }
+      } catch (err) {
+        console.error("Relational sports query error:", err);
+      }
+
+      const eventConfigSports = events?.[0]?.configuration?.sports;
+      if (eventConfigSports && typeof eventConfigSports === 'object') {
+        Object.entries(eventConfigSports).forEach(([sName, cfg]: [string, any]) => {
+          if (cfg?.enabled !== false && cfg?.categories && Array.isArray(cfg.categories)) {
+            if (!sportsMap[sName] || sportsMap[sName].length === 0) {
+              sportsMap[sName] = cfg.categories;
+            }
+          }
+        });
+      }
+
       const { data: dbPlayers } = await supabase
         .from('players')
         .select('*')
         .eq('event_id', currentEventId)
         .order('created_at', { ascending: false });
-        
+
       if (dbPlayers) {
+        // Fallback: if no sports configured yet, populate from registered players
+        if (Object.keys(sportsMap).length === 0) {
+          dbPlayers.forEach((p: any) => {
+            const s = p.sport ? p.sport.trim() : '';
+            if (!s) return;
+            if (!sportsMap[s]) sportsMap[s] = [];
+            const cats = p.category ? p.category.split(',').map((c: string) => c.trim()).filter(Boolean) : [];
+            cats.forEach((c: string) => {
+              if (!sportsMap[s].includes(c)) sportsMap[s].push(c);
+            });
+          });
+        }
+
+        setEventSportsMap(sportsMap);
         const mapped = dbPlayers.map(p => {
           const playerCode = extractPlayerCode(p) || "-";
           const gender = p.gender || p.push_subscription?._metadata?.gender || "-";
@@ -185,6 +239,51 @@ export default function PlayersPage() {
     }
   };
 
+  const availableSports = useMemo(() => {
+    return Object.keys(eventSportsMap);
+  }, [eventSportsMap]);
+
+  const availableCategories = useMemo(() => {
+    if (sportFilter !== "ALL") {
+      return eventSportsMap[sportFilter] || [];
+    }
+    const allCats = new Set<string>();
+    Object.values(eventSportsMap).forEach((cats) => {
+      cats.forEach((c) => allCats.add(c));
+    });
+    return Array.from(allCats);
+  }, [sportFilter, eventSportsMap]);
+
+  const handleSportChange = (newSport: string) => {
+    setSportFilter(newSport);
+    if (newSport === "ALL") return;
+
+    const validCategoriesForSport = eventSportsMap[newSport] || [];
+    if (
+      categoryFilter !== "ALL" &&
+      !validCategoriesForSport.some(
+        (c) => c.toLowerCase() === categoryFilter.toLowerCase()
+      )
+    ) {
+      setCategoryFilter("ALL");
+    }
+  };
+
+  const hasActiveFilters =
+    sourceFilter !== "ALL" ||
+    statusFilter !== "ALL" ||
+    genderFilter !== "ALL" ||
+    sportFilter !== "ALL" ||
+    categoryFilter !== "ALL";
+
+  const clearFilters = () => {
+    setSourceFilter("ALL");
+    setStatusFilter("ALL");
+    setGenderFilter("ALL");
+    setSportFilter("ALL");
+    setCategoryFilter("ALL");
+  };
+
   const filteredPlayers = useMemo(() => {
     return players.filter(p => {
       const matchesSearch =
@@ -193,9 +292,32 @@ export default function PlayersPage() {
         p.playerCode.toLowerCase().includes(searchQuery.toLowerCase());
       const matchesStatus = statusFilter === "ALL" || p.status === statusFilter;
       const matchesSource = sourceFilter === "ALL" || p.source === sourceFilter;
-      return matchesSearch && matchesStatus && matchesSource;
+      const matchesGender =
+        genderFilter === "ALL" ||
+        (p.gender && p.gender.trim().toLowerCase() === genderFilter.toLowerCase());
+      const matchesSport =
+        sportFilter === "ALL" ||
+        (p.sport && p.sport.trim().toLowerCase() === sportFilter.toLowerCase());
+
+      let matchesCategory = true;
+      if (categoryFilter !== "ALL") {
+        const playerCategories = p.category
+          ? p.category.split(',').map((c: string) => c.trim().toLowerCase())
+          : [];
+        const filterCatLower = categoryFilter.trim().toLowerCase();
+        matchesCategory = playerCategories.includes(filterCatLower);
+      }
+
+      return (
+        matchesSearch &&
+        matchesStatus &&
+        matchesSource &&
+        matchesGender &&
+        matchesSport &&
+        matchesCategory
+      );
     });
-  }, [players, searchQuery, statusFilter, sourceFilter]);
+  }, [players, searchQuery, statusFilter, sourceFilter, genderFilter, sportFilter, categoryFilter]);
 
   const uniqueStatuses = Array.from(new Set(players.map(p => p.status)));
 
@@ -270,7 +392,7 @@ export default function PlayersPage() {
               className="pl-9 pr-4 py-2 border border-gray-300 dark:border-zinc-700 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white dark:bg-zinc-950 w-72"
             />
           </div>
-          <div className="flex items-center gap-3">
+          <div className="flex flex-wrap items-center gap-3">
             {/* Source Filter */}
             <div className="flex items-center gap-2">
               <span className="text-xs text-gray-500 font-medium">Source:</span>
@@ -298,8 +420,67 @@ export default function PlayersPage() {
               </select>
             </div>
 
-            <div className="text-sm text-gray-500 font-medium border-l pl-3 border-gray-300 dark:border-zinc-700">
+            {/* Gender Filter */}
+            <div className="flex items-center gap-2">
+              <span className="text-xs text-gray-500 font-medium">Gender:</span>
+              <select 
+                value={genderFilter} 
+                onChange={(e) => setGenderFilter(e.target.value)}
+                className="py-1.5 px-3 border border-gray-300 dark:border-zinc-700 rounded-lg text-sm bg-white dark:bg-zinc-950 focus:outline-none focus:ring-2 focus:ring-blue-500"
+              >
+                <option value="ALL">All</option>
+                <option value="Male">Male</option>
+                <option value="Female">Female</option>
+              </select>
+            </div>
+
+            {/* Sport Filter */}
+            <div className="flex items-center gap-2">
+              <span className="text-xs text-gray-500 font-medium">Sport:</span>
+              <select 
+                value={sportFilter} 
+                onChange={(e) => handleSportChange(e.target.value)}
+                className="py-1.5 px-3 border border-gray-300 dark:border-zinc-700 rounded-lg text-sm bg-white dark:bg-zinc-950 focus:outline-none focus:ring-2 focus:ring-blue-500"
+              >
+                <option value="ALL">All</option>
+                {availableSports.map(s => (
+                  <option key={s} value={s}>{s}</option>
+                ))}
+              </select>
+            </div>
+
+            {/* Category Filter */}
+            <div className="flex items-center gap-2">
+              <span className="text-xs text-gray-500 font-medium">Category:</span>
+              <select 
+                value={categoryFilter} 
+                onChange={(e) => setCategoryFilter(e.target.value)}
+                className="py-1.5 px-3 border border-gray-300 dark:border-zinc-700 rounded-lg text-sm bg-white dark:bg-zinc-950 focus:outline-none focus:ring-2 focus:ring-blue-500"
+              >
+                <option value="ALL">All</option>
+                {availableCategories.map(c => (
+                  <option key={c} value={c}>{c}</option>
+                ))}
+              </select>
+            </div>
+
+            {/* Clear Filters Button */}
+            {hasActiveFilters && (
+              <button
+                onClick={clearFilters}
+                className="flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-semibold text-rose-600 hover:text-rose-700 bg-rose-50 hover:bg-rose-100 dark:bg-rose-950/40 dark:text-rose-300 rounded-lg border border-rose-200 dark:border-rose-900 transition-colors"
+                title="Reset all filters"
+              >
+                <RotateCcw className="w-3.5 h-3.5" />
+                Clear Filters
+              </button>
+            )}
+
+            <div className="text-sm text-gray-500 font-medium border-l pl-3 border-gray-300 dark:border-zinc-700 whitespace-nowrap">
               Total: {filteredPlayers.length}
+              {filteredPlayers.length !== players.length && (
+                <span className="text-xs text-gray-400 ml-1">of {players.length}</span>
+              )}
             </div>
           </div>
         </div>
@@ -308,7 +489,18 @@ export default function PlayersPage() {
           {isLoading ? (
              <div className="p-8 text-center text-gray-500">Loading players...</div>
           ) : filteredPlayers.length === 0 ? (
-             <div className="p-8 text-center text-gray-500">No players found matching criteria.</div>
+             <div className="p-12 text-center space-y-3">
+               <p className="text-gray-500 dark:text-gray-400 font-medium text-sm">No players match the selected filters.</p>
+               {hasActiveFilters && (
+                 <button
+                   onClick={clearFilters}
+                   className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-gray-100 hover:bg-gray-200 dark:bg-zinc-800 dark:hover:bg-zinc-700 text-gray-700 dark:text-gray-300 text-xs font-semibold rounded-lg transition-colors"
+                 >
+                   <RotateCcw className="w-3.5 h-3.5" />
+                   Clear Filters
+                 </button>
+               )}
+             </div>
           ) : (
             <table className="w-full text-left text-sm">
               <thead className="bg-gray-50 dark:bg-zinc-950 text-gray-600 dark:text-gray-400 border-b border-gray-200 dark:border-zinc-800">
