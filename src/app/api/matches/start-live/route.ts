@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import { createClient } from '@/utils/supabase/server';
+import { extractMatchCode } from '@/utils/matchCode';
 
 export async function POST(req: Request) {
   try {
@@ -15,7 +16,7 @@ export async function POST(req: Request) {
     // 1. Fetch match and participating player IDs
     const { data: match, error: fetchErr } = await supabase
       .from('matches')
-      .select('id, event_id, sport, category, playing_area, status, team1_p1_id, team1_p2_id, team2_p1_id, team2_p2_id')
+      .select('id, event_id, sport, category, playing_area, status, team1_p1_id, team1_p2_id, team2_p1_id, team2_p2_id, score')
       .eq('id', matchId)
       .single();
 
@@ -64,9 +65,14 @@ export async function POST(req: Request) {
       }
     }
 
+    const finalCode = extractMatchCode(updatedMatch) || extractMatchCode(match);
+
     return NextResponse.json({
       success: true,
-      match: updatedMatch,
+      match: {
+        ...updatedMatch,
+        ...(finalCode ? { match_code: finalCode } : {})
+      },
       affectedPlayerIds: playerIds,
       playerStatus: 'PLAYING',
     });

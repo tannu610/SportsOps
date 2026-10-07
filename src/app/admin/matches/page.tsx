@@ -20,10 +20,12 @@ import {
   Activity,
   CalendarDays,
   User,
-  Users
+  Users,
+  Copy
 } from "lucide-react";
 import { createClient } from "@/utils/supabase/client";
 import { DEFAULT_SPORTS_CONFIG, SPORT_FACILITY_DEFAULTS } from "@/utils/eventConfig";
+import { extractMatchCode } from "@/utils/matchCode";
 
 const PHASES = ["Round 1", "Round 2", "Round 3", "Quarter Final", "Semi Final", "Final"];
 
@@ -40,6 +42,8 @@ type Player = {
 
 type Match = {
   id: string;
+  match_code?: string;
+  score?: string;
   sport: string;
   category: string;
   phase: string;
@@ -52,6 +56,50 @@ type Match = {
   team2_p1: Player | null;
   team2_p2: Player | null;
 };
+
+function MatchCodeBadge({ code }: { code?: string }) {
+  const [copied, setCopied] = useState(false);
+  if (!code) return null;
+
+  const handleCopy = (e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    navigator.clipboard.writeText(code);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  };
+
+  return (
+    <div className="flex items-center justify-between bg-slate-50 dark:bg-zinc-800/80 px-3 py-2 rounded-xl border border-slate-200/80 dark:border-zinc-700/70">
+      <div>
+        <span className="text-[10px] font-black uppercase tracking-wider text-slate-400 dark:text-zinc-400 block leading-tight">
+          MATCH CODE
+        </span>
+        <span className="font-mono font-black text-sm text-indigo-600 dark:text-indigo-400 tracking-wider">
+          {code}
+        </span>
+      </div>
+      <button
+        type="button"
+        onClick={handleCopy}
+        className="flex items-center gap-1.5 px-2.5 py-1 text-[11px] font-bold rounded-lg transition-colors border bg-white dark:bg-zinc-900 border-slate-200 dark:border-zinc-700 text-slate-700 dark:text-zinc-200 hover:bg-slate-100 dark:hover:bg-zinc-800 shadow-xs cursor-pointer"
+        title="Copy Match Code"
+      >
+        {copied ? (
+          <>
+            <Check className="w-3 h-3 text-emerald-600 dark:text-emerald-400" />
+            <span className="text-emerald-600 dark:text-emerald-400">Copied</span>
+          </>
+        ) : (
+          <>
+            <Copy className="w-3 h-3 text-slate-500 dark:text-zinc-400" />
+            <span>Copy</span>
+          </>
+        )}
+      </button>
+    </div>
+  );
+}
 
 type SportFacilityMap = Record<
   string,
@@ -173,11 +221,12 @@ export default function PlayAreaManagementPage() {
 
         if (dbPlayers) setPlayers(dbPlayers);
 
-        // 3. Fetch matches
-        const { data: dbMatches } = await supabase
+        // 3. Fetch matches safely
+        let rawMatches: any[] = [];
+        const queryWithCode = await supabase
           .from("matches")
           .select(`
-            id, sport, category, phase, playing_area, scheduled_time, reporting_time, status,
+            id, match_code, sport, category, phase, playing_area, scheduled_time, reporting_time, status, score,
             team1_p1:players!fk_t1p1(id, employee_id, name, contact_info, status),
             team1_p2:players!fk_t1p2(id, employee_id, name, contact_info, status),
             team2_p1:players!fk_t2p1(id, employee_id, name, contact_info, status),
@@ -186,7 +235,34 @@ export default function PlayAreaManagementPage() {
           .eq("event_id", currentEventId)
           .order("created_at", { ascending: false });
 
-        if (dbMatches) setMatches(dbMatches as any);
+        if (!queryWithCode.error && queryWithCode.data) {
+          rawMatches = queryWithCode.data;
+        } else {
+          const queryWithoutCode = await supabase
+            .from("matches")
+            .select(`
+              id, sport, category, phase, playing_area, scheduled_time, reporting_time, status, score,
+              team1_p1:players!fk_t1p1(id, employee_id, name, contact_info, status),
+              team1_p2:players!fk_t1p2(id, employee_id, name, contact_info, status),
+              team2_p1:players!fk_t2p1(id, employee_id, name, contact_info, status),
+              team2_p2:players!fk_t2p2(id, employee_id, name, contact_info, status)
+            `)
+            .eq("event_id", currentEventId)
+            .order("created_at", { ascending: false });
+
+          rawMatches = queryWithoutCode.data || [];
+        }
+
+        const normalizedMatches = rawMatches.map((m: any) => ({
+          ...m,
+          match_code: extractMatchCode(m) || m.match_code
+        }));
+        setMatches(normalizedMatches as any);
+
+        // Auto-trigger backfill if any match is missing a code
+        if (normalizedMatches.some((m: any) => !m.match_code)) {
+          fetch('/api/admin/matches/backfill', { method: 'POST' }).catch(() => {});
+        }
       }
     } catch (err) {
       console.error("Error loading Play Area Management data:", err);
@@ -825,6 +901,9 @@ export default function PlayAreaManagementPage() {
                       </span>
                     </div>
 
+                    {/* Match Code */}
+                    <MatchCodeBadge code={match.match_code} />
+
                     {/* Matchup & Player Responses */}
                     <div className="space-y-3 bg-gray-50/70 dark:bg-zinc-800/40 p-4 rounded-2xl">
                       {/* Team 1 */}
@@ -957,6 +1036,9 @@ export default function PlayAreaManagementPage() {
                         {match.phase}
                       </span>
                     </div>
+
+                    {/* Match Code */}
+                    <MatchCodeBadge code={match.match_code} />
 
                     {/* Matchup */}
                     <div className="bg-gradient-to-br from-indigo-50 to-purple-50 dark:from-zinc-800 dark:to-zinc-800/60 p-4 rounded-2xl space-y-3">
@@ -1222,6 +1304,9 @@ export default function PlayAreaManagementPage() {
                 {managingMatch.sport} • {managingMatch.category} ({managingMatch.phase})
               </div>
             </div>
+
+            {/* Match Code */}
+            <MatchCodeBadge code={managingMatch.match_code} />
 
             <div className="space-y-3 pt-2">
               {/* Send Push Reminder */}

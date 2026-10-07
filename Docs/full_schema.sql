@@ -95,6 +95,7 @@ CREATE TABLE IF NOT EXISTS players (
 CREATE TABLE IF NOT EXISTS matches (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   event_id UUID REFERENCES events(id) ON DELETE CASCADE,
+  match_code TEXT,
   sport TEXT NOT NULL DEFAULT 'Other',
   category TEXT DEFAULT 'NA',
   phase TEXT DEFAULT 'Round 1',
@@ -175,6 +176,9 @@ ON matches (
   team2_p1_id,
   COALESCE(team2_p2_id, '00000000-0000-0000-0000-000000000000'::UUID)
 );
+
+-- Unique index to guarantee global uniqueness of human-readable Match Codes
+CREATE UNIQUE INDEX IF NOT EXISTS idx_matches_match_code ON matches(match_code) WHERE match_code IS NOT NULL;
 
 -- ==============================================================================
 -- 4. RPC FUNCTIONS (State Machine & Match Workflows)

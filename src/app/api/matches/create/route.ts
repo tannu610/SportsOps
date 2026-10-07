@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import { createClient } from '@/utils/supabase/server';
+import { generateUniqueMatchCode, extractMatchCode } from '@/utils/matchCode';
 
 // In-process locks to prevent concurrent race conditions
 const inFlightPlayerLocks = new Set<string>();
@@ -139,10 +140,56 @@ export async function POST(req: Request) {
         }
       }
 
-      // 3. Insert match into database
-      const { data: newMatch, error: insertError } = await supabase
+      // 3. Generate globally unique 6-character Match Code
+      const existingCodes = new Set<string>();
+      const { data: currentMatches } = await supabase
         .from('matches')
-        .insert([{
+        .select('id, score');
+      if (currentMatches) {
+        currentMatches.forEach((m: any) => {
+          const c = extractMatchCode(m);
+          if (c) existingCodes.add(c.toUpperCase());
+        });
+      }
+
+      const matchCode = generateUniqueMatchCode(existingCodes);
+
+      // 4. Insert match into database
+      const matchPayload: any = {
+        event_id: eventId,
+        sport,
+        category: category || 'NA',
+        phase: phase || 'Round 1',
+        playing_area: playingArea,
+        scheduled_time: scheduledTime,
+        team1_p1_id,
+        team1_p2_id,
+        team2_p1_id,
+        team2_p2_id,
+        status: 'NOTIFIED',
+        match_code: matchCode,
+        score: JSON.stringify({ match_code: matchCode })
+      };
+
+      let newMatch: any = null;
+      let insertError: any = null;
+
+      const directInsert = await supabase
+        .from('matches')
+        .insert([matchPayload])
+        .select()
+        .single();
+
+      if (!directInsert.error && directInsert.data) {
+        newMatch = directInsert.data;
+      } else if (
+        directInsert.error &&
+        (directInsert.error.code === 'PGRST204' ||
+          directInsert.error.code === '42703' ||
+          directInsert.error.message?.toLowerCase().includes('match_code'))
+      ) {
+        // Fallback if match_code column not yet present in PostgREST schema cache
+        const fallbackPayload = {
           event_id: eventId,
           sport,
           category: category || 'NA',
@@ -153,10 +200,21 @@ export async function POST(req: Request) {
           team1_p2_id,
           team2_p1_id,
           team2_p2_id,
-          status: 'NOTIFIED'
-        }])
-        .select()
-        .single();
+          status: 'NOTIFIED',
+          score: JSON.stringify({ match_code: matchCode })
+        };
+
+        const fbInsert = await supabase
+          .from('matches')
+          .insert([fallbackPayload])
+          .select()
+          .single();
+
+        newMatch = fbInsert.data;
+        insertError = fbInsert.error;
+      } else {
+        insertError = directInsert.error;
+      }
 
       if (insertError) {
         const errMsg = insertError.message?.toLowerCase() || '';
@@ -172,13 +230,19 @@ export async function POST(req: Request) {
         return NextResponse.json({ error: insertError.message }, { status: 500 });
       }
 
-      // 4. Mark players as CALLED
+      // Ensure match_code is attached to match object
+      newMatch = {
+        ...newMatch,
+        match_code: matchCode
+      };
+
+      // 5. Mark players as CALLED
       await supabase.rpc('call_players_for_match', { p_player_ids: playerIds });
 
-      // 5. Create notification records in DB for all players in this match
+      // 6. Create notification records in DB for all players in this match
       const formattedTime = new Date(scheduledTime).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true });
       const categoryText = category && category !== 'NA' ? category : (phase || 'Round 1');
-      const notificationMessage = `Your ${sport} match (${categoryText}) at ${playingArea} is scheduled for ${formattedTime}. Please report immediately.`;
+      const notificationMessage = `Your ${sport} match (${categoryText}) at ${playingArea} is scheduled for ${formattedTime} (Match Code: ${matchCode}). Please report immediately.`;
 
       const notificationInserts = playerIds.map(pid => ({
         player_id: pid,

@@ -6,6 +6,7 @@ import Link from "next/link";
 import { Bell, MapPin, Clock, CalendarDays, CheckCircle2, XCircle, Trophy, RefreshCw } from "lucide-react";
 import { createClient } from "@/utils/supabase/client";
 import { extractPlayerCode } from "@/utils/playerCode";
+import { extractMatchCode } from "@/utils/matchCode";
 
 function DashboardContent() {
   const supabase = useMemo(() => createClient(), []);
@@ -96,10 +97,11 @@ function DashboardContent() {
       const { data: pData } = await supabase.from('players').select('*').eq('id', playerId).single();
       if (pData) setPlayer(pData);
       
-      const { data: mData } = await supabase
+      let mData: any[] = [];
+      const q1 = await supabase
         .from('matches')
         .select(`
-          id, sport, category, playing_area, scheduled_time, reporting_time, status,
+          id, match_code, sport, category, playing_area, scheduled_time, reporting_time, status, score,
           team1_p1:players!fk_t1p1(id, name),
           team1_p2:players!fk_t1p2(id, name),
           team2_p1:players!fk_t2p1(id, name),
@@ -109,14 +111,37 @@ function DashboardContent() {
         .in('status', ['SCHEDULED', 'NOTIFIED', 'PLAYER_CONFIRMED', 'READY', 'LIVE', 'DELAYED', 'NO-SHOW PENDING', 'NO_SHOW_PENDING'])
         .order('scheduled_time', { ascending: true })
         .limit(1);
+
+      if (!q1.error && q1.data) {
+        mData = q1.data;
+      } else {
+        const q2 = await supabase
+          .from('matches')
+          .select(`
+            id, sport, category, playing_area, scheduled_time, reporting_time, status, score,
+            team1_p1:players!fk_t1p1(id, name),
+            team1_p2:players!fk_t1p2(id, name),
+            team2_p1:players!fk_t2p1(id, name),
+            team2_p2:players!fk_t2p2(id, name)
+          `)
+          .or(`team1_p1_id.eq.${playerId},team1_p2_id.eq.${playerId},team2_p1_id.eq.${playerId},team2_p2_id.eq.${playerId}`)
+          .in('status', ['SCHEDULED', 'NOTIFIED', 'PLAYER_CONFIRMED', 'READY', 'LIVE', 'DELAYED', 'NO-SHOW PENDING', 'NO_SHOW_PENDING'])
+          .order('scheduled_time', { ascending: true })
+          .limit(1);
+        mData = q2.data || [];
+      }
         
       if (mData && mData.length > 0) {
+        const normalized = {
+          ...mData[0],
+          match_code: extractMatchCode(mData[0]) || mData[0].match_code
+        };
         setNextMatch((prevMatch: any) => {
-          if (prevMatch && prevMatch.id !== mData[0].id) {
+          if (prevMatch && prevMatch.id !== normalized.id) {
             setHasAcknowledged(false);
             setResponseType(null);
           }
-          return mData[0];
+          return normalized;
         });
       } else {
         setNextMatch(null);
@@ -430,6 +455,11 @@ function DashboardContent() {
                   <div className="text-blue-100 text-xs font-semibold tracking-wider mb-1 uppercase">{nextMatch.sport} • {nextMatch.category}</div>
                   <div className="text-2xl font-bold leading-tight mt-1">vs {opponentName}</div>
                   {partnerName && <div className="text-blue-200 text-sm mt-1">Partner: {partnerName}</div>}
+                  {nextMatch.match_code && (
+                    <div className="text-blue-200/90 text-xs font-mono font-medium tracking-wide mt-1.5">
+                      Match Code: <span className="font-bold text-white tracking-widest">{nextMatch.match_code}</span>
+                    </div>
+                  )}
                 </div>
                 {nextMatch.status === 'NO-SHOW PENDING' ? (
                   <div className="bg-red-500 text-white text-[10px] font-bold px-2 py-1 rounded animate-pulse">URGENT</div>
