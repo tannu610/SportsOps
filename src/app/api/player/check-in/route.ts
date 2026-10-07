@@ -93,7 +93,8 @@ export async function POST(req: Request) {
     if (!playerCode) {
       playerCode = generatePlayerCode();
       const meta = player.push_subscription?._metadata || {};
-      const updatedMeta = { ...meta, player_code: playerCode };
+      const existingSource = (player as any).source || meta.source || 'IMPORT';
+      const updatedMeta = { ...meta, player_code: playerCode, source: existingSource };
       const updatedPush = { ...(player.push_subscription || {}), _metadata: updatedMeta };
       const { error: upErr } = await supabase
         .from('players')

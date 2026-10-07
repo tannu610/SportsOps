@@ -29,7 +29,7 @@ export interface BackfillResult {
 export async function backfillMissingPlayerCodes(supabase: any): Promise<BackfillResult> {
   const { data: allPlayers, error: fetchErr } = await supabase
     .from('players')
-    .select('id, employee_id, name, sport, category, status, contact_info, push_subscription');
+    .select('*');
 
   if (fetchErr) {
     throw new Error(`Failed to fetch players for backfill: ${fetchErr.message}`);
@@ -90,10 +90,11 @@ export async function backfillMissingPlayerCodes(supabase: any): Promise<Backfil
     }
 
     const existingMeta = p.push_subscription?._metadata || {};
+    const existingSource = (p as any).source || existingMeta.source;
     const updatedMeta = {
       ...existingMeta,
       player_code: assignedCode,
-      source: existingMeta.source || 'IMPORT'
+      source: existingSource || 'IMPORT'
     };
     const updatedPush = {
       ...(p.push_subscription || {}),

@@ -226,7 +226,16 @@ export async function POST(req: Request) {
       source: 'WALK-IN',
       player_code: playerCode,
       status: 'REGISTERED',
-      current_round: 1
+      current_round: 1,
+      push_subscription: {
+        _metadata: {
+          player_code: playerCode,
+          gender: gender,
+          source: 'WALK-IN',
+          email: cleanEmail,
+          transport_required: isTransport
+        }
+      }
     };
 
     let insertedPlayer: any = null;

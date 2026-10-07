@@ -20,7 +20,7 @@ export async function POST(req: Request) {
     // 1. Fetch all existing players across the system to track player codes & duplicates
     const { data: allPlayers, error: fetchErr } = await supabase
       .from('players')
-      .select('id, event_id, employee_id, name, sport, category, status, contact_info, push_subscription');
+      .select('*');
 
     if (fetchErr) {
       return NextResponse.json({ error: `Database error: ${fetchErr.message}` }, { status: 500 });
@@ -78,7 +78,8 @@ export async function POST(req: Request) {
       if (existingWithoutCode && existingWithoutCode.length > 0) {
         for (const p of existingWithoutCode) {
           const existingMeta = p.push_subscription?._metadata || {};
-          const updatedMeta = { ...existingMeta, player_code: playerCode, source: existingMeta.source || 'IMPORT' };
+          const existingSource = (p as any).source || existingMeta.source;
+          const updatedMeta = { ...existingMeta, player_code: playerCode, source: existingSource || 'IMPORT' };
           const updatedPush = { ...(p.push_subscription || {}), _metadata: updatedMeta };
 
           const { error: upErr } = await supabase

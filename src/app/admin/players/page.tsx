@@ -4,7 +4,7 @@ import { useState, useEffect, useMemo } from "react";
 import { Upload, Download, Search, Plus, CheckCircle, AlertTriangle, X, Filter } from "lucide-react";
 import * as XLSX from "xlsx";
 import { createClient } from "@/utils/supabase/client";
-import { extractPlayerCode } from "@/utils/playerCode";
+import { extractPlayerCode, extractPlayerSource } from "@/utils/playerCode";
 
 type PlayerRecord = {
   id: string; // Employee ID
@@ -65,7 +65,7 @@ export default function PlayersPage() {
         const mapped = dbPlayers.map(p => {
           const playerCode = extractPlayerCode(p) || "-";
           const gender = p.gender || p.push_subscription?._metadata?.gender || "-";
-          const source = p.source || p.push_subscription?._metadata?.source || (p.employee_id?.startsWith("WALK") ? "WALK-IN" : "IMPORT");
+          const source = extractPlayerSource(p);
 
           return {
             id: p.employee_id,

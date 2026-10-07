@@ -193,7 +193,8 @@ export default function MatchDayRegistrationPage() {
           sport,
           categories: selectedCategories,
           contact_info: mobileNo.trim(),
-          email: email.trim() || null
+          email: email.trim() || null,
+          source: "WALK-IN"
         })
       });
 

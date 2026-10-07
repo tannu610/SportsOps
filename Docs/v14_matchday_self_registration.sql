@@ -19,8 +19,16 @@ ALTER TABLE players ADD COLUMN IF NOT EXISTS source TEXT DEFAULT 'IMPORT';
 ALTER TABLE players ADD COLUMN IF NOT EXISTS email TEXT;
 ALTER TABLE players ADD COLUMN IF NOT EXISTS transport_required BOOLEAN DEFAULT FALSE;
 
--- 2. Backfill existing player registrations to ensure source = 'IMPORT'
-UPDATE players SET source = 'IMPORT' WHERE source IS NULL;
+-- 2. Backfill existing player registrations while preserving walk-in source
+UPDATE players 
+SET source = CASE 
+  WHEN push_subscription IS NOT NULL 
+    AND push_subscription ? '_metadata' 
+    AND (push_subscription->_metadata->>'source') = 'WALK-IN' 
+  THEN 'WALK-IN'
+  ELSE 'IMPORT'
+END 
+WHERE source IS NULL;
 
 -- 3. Unique index for player_code (partial index allowing NULL for legacy imported records)
 CREATE UNIQUE INDEX IF NOT EXISTS idx_players_player_code ON players(player_code) WHERE player_code IS NOT NULL;

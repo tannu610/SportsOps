@@ -55,3 +55,26 @@ export function extractPlayerCode(player: any): string | null {
   }
   return null;
 }
+
+/**
+ * Standard extractor to read a player's registration source ('IMPORT' | 'WALK-IN').
+ * Reads directly from native column or push_subscription metadata.
+ * Never infers the source from Player Code, Employee ID, status, or any other field.
+ * Defaults to 'IMPORT' only when no explicit source is persisted.
+ */
+export function extractPlayerSource(player: any): 'IMPORT' | 'WALK-IN' {
+  if (!player) return 'IMPORT';
+  const direct = typeof player.source === 'string' && player.source.trim();
+  if (direct) {
+    const upper = direct.trim().toUpperCase();
+    if (upper === 'WALK-IN') return 'WALK-IN';
+    if (upper === 'IMPORT') return 'IMPORT';
+  }
+  const meta = player.push_subscription?._metadata?.source;
+  if (typeof meta === 'string' && meta.trim()) {
+    const upper = meta.trim().toUpperCase();
+    if (upper === 'WALK-IN') return 'WALK-IN';
+    if (upper === 'IMPORT') return 'IMPORT';
+  }
+  return 'IMPORT';
+}
