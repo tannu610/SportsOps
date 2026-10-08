@@ -15,9 +15,17 @@ import {
   Eye,
   CalendarDays,
   ShieldCheck,
-  ChevronRight
+  ChevronRight,
+  Download,
+  Loader2,
+  AlertCircle,
+  CheckCircle2,
 } from "lucide-react";
 import { createClient } from "@/utils/supabase/client";
+import {
+  downloadMatchHistoryExcel,
+  generateMatchHistoryFilename,
+} from "@/utils/matchHistoryExport";
 
 interface MatchHistoryItem {
   id: string;
@@ -216,6 +224,60 @@ export default function AdminMatchHistoryPage() {
     setCategoryFilter("ALL");
     setRoundFilter("ALL");
     setRefereeFilter("ALL");
+    setExportNotification(null);
+  };
+
+  // Export to Excel State & Handler
+  const [isExporting, setIsExporting] = useState(false);
+  const [exportNotification, setExportNotification] = useState<{
+    type: "warning" | "error" | "success";
+    message: string;
+  } | null>(null);
+
+  const handleExportExcel = async () => {
+    setExportNotification(null);
+
+    // If zero records matching current filters
+    if (filteredMatches.length === 0) {
+      setExportNotification({
+        type: "warning",
+        message: "No match history records found for the selected filters.",
+      });
+      return;
+    }
+
+    try {
+      setIsExporting(true);
+      // Brief pause to ensure UI updates to "Preparing..." state
+      await new Promise((resolve) => setTimeout(resolve, 200));
+
+      const filename = generateMatchHistoryFilename({
+        sport: sportFilter,
+        category: categoryFilter,
+        round: roundFilter,
+        referee: refereeFilter,
+      });
+
+      downloadMatchHistoryExcel(filteredMatches, filename);
+
+      setExportNotification({
+        type: "success",
+        message: `Successfully exported ${filteredMatches.length} match ${
+          filteredMatches.length === 1 ? "record" : "records"
+        } to ${filename}.`,
+      });
+      setTimeout(() => {
+        setExportNotification((prev) => (prev?.type === "success" ? null : prev));
+      }, 4000);
+    } catch (err: any) {
+      console.error("Export to Excel failed:", err);
+      setExportNotification({
+        type: "error",
+        message: "Failed to export Excel file. Please try again.",
+      });
+    } finally {
+      setIsExporting(false);
+    }
   };
 
   return (
@@ -238,12 +300,58 @@ export default function AdminMatchHistoryPage() {
           </div>
         </div>
 
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2.5">
           <span className="px-3 py-1.5 rounded-lg text-xs font-bold bg-gray-100 dark:bg-zinc-800 text-gray-700 dark:text-gray-300 border border-gray-200 dark:border-zinc-700">
             Total Completed: {historyItems.length}
           </span>
+          <button
+            type="button"
+            onClick={handleExportExcel}
+            disabled={isExporting}
+            className="flex items-center gap-2 px-3.5 py-1.5 rounded-lg text-xs font-bold bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 text-white shadow-sm transition-all disabled:opacity-50 cursor-pointer"
+            title="Export filtered match history to Excel (.xlsx)"
+          >
+            {isExporting ? (
+              <Loader2 className="w-3.5 h-3.5 animate-spin" />
+            ) : (
+              <Download className="w-3.5 h-3.5" />
+            )}
+            <span>{isExporting ? "Preparing..." : "Export Excel"}</span>
+          </button>
         </div>
       </div>
+
+      {/* Export Notification / Alert Banner */}
+      {exportNotification && (
+        <div
+          className={`flex items-center justify-between p-3.5 rounded-xl border text-xs sm:text-sm font-medium transition-all ${
+            exportNotification.type === "warning"
+              ? "bg-amber-50 dark:bg-amber-950/30 border-amber-200 dark:border-amber-800 text-amber-800 dark:text-amber-300"
+              : exportNotification.type === "error"
+              ? "bg-rose-50 dark:bg-rose-950/30 border-rose-200 dark:border-rose-800 text-rose-800 dark:text-rose-300"
+              : "bg-emerald-50 dark:bg-emerald-950/30 border-emerald-200 dark:border-emerald-800 text-emerald-800 dark:text-emerald-300"
+          }`}
+        >
+          <div className="flex items-center gap-2">
+            {exportNotification.type === "warning" ? (
+              <AlertCircle className="w-4 h-4 text-amber-600 dark:text-amber-400 shrink-0" />
+            ) : exportNotification.type === "error" ? (
+              <AlertCircle className="w-4 h-4 text-rose-600 dark:text-rose-400 shrink-0" />
+            ) : (
+              <CheckCircle2 className="w-4 h-4 text-emerald-600 dark:text-emerald-400 shrink-0" />
+            )}
+            <span>{exportNotification.message}</span>
+          </div>
+          <button
+            type="button"
+            onClick={() => setExportNotification(null)}
+            className="p-1 rounded-md hover:bg-black/5 dark:hover:bg-white/5 transition cursor-pointer"
+            title="Dismiss message"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+      )}
 
       {/* Main Table / List Container */}
       <div className="bg-white dark:bg-zinc-900 border border-gray-200 dark:border-zinc-800 rounded-xl overflow-hidden shadow-sm">
