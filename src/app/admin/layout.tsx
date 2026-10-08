@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { Users, LayoutDashboard, CalendarDays, Settings, Trophy } from "lucide-react";
+import { Users, LayoutDashboard, CalendarDays, Settings, Trophy, History } from "lucide-react";
 
 export default function AdminLayout({
   children,
@@ -39,6 +39,12 @@ export default function AdminLayout({
               <Link href="/admin/configuration" className="flex items-center px-3 py-2 text-gray-700 dark:text-gray-300 rounded-md hover:bg-gray-100 dark:hover:bg-zinc-800 hover:text-blue-600 dark:hover:text-blue-400 transition-colors">
                 <Settings className="w-5 h-5 mr-3" />
                 Event Configuration
+              </Link>
+            </li>
+            <li>
+              <Link href="/admin/history" className="flex items-center px-3 py-2 text-gray-700 dark:text-gray-300 rounded-md hover:bg-gray-100 dark:hover:bg-zinc-800 hover:text-blue-600 dark:hover:text-blue-400 transition-colors">
+                <History className="w-5 h-5 mr-3" />
+                Match History
               </Link>
             </li>
           </ul>
