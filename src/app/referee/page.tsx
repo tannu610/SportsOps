@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback, useTransition } from "react";
+import { useState, useEffect, useCallback } from "react";
 import {
   Trophy,
   PlayCircle,
@@ -43,6 +43,58 @@ interface RefereeMatch {
   completed_at: string | null;
 }
 
+// Storage keys for persisting active referee session across page refreshes
+const SESSION_MATCH_CODE_KEY = "sportsops_referee_active_match_code";
+const SESSION_REFEREE_NAME_KEY = "sportsops_referee_name";
+const SESSION_MATCH_ID_KEY = "sportsops_referee_active_match_id";
+
+function saveRefereeSession(code: string, refereeName: string, matchId?: string) {
+  if (typeof window === "undefined") return;
+  try {
+    sessionStorage.setItem(SESSION_MATCH_CODE_KEY, code);
+    localStorage.setItem(SESSION_MATCH_CODE_KEY, code);
+    if (matchId) {
+      sessionStorage.setItem(SESSION_MATCH_ID_KEY, matchId);
+      localStorage.setItem(SESSION_MATCH_ID_KEY, matchId);
+    }
+    if (refereeName.trim()) {
+      sessionStorage.setItem(SESSION_REFEREE_NAME_KEY, refereeName.trim());
+      localStorage.setItem(SESSION_REFEREE_NAME_KEY, refereeName.trim());
+    }
+  } catch (err) {
+    console.error("Failed to save referee session:", err);
+  }
+}
+
+function clearRefereeActiveMatchSession() {
+  if (typeof window === "undefined") return;
+  try {
+    sessionStorage.removeItem(SESSION_MATCH_CODE_KEY);
+    sessionStorage.removeItem(SESSION_MATCH_ID_KEY);
+    localStorage.removeItem(SESSION_MATCH_CODE_KEY);
+    localStorage.removeItem(SESSION_MATCH_ID_KEY);
+  } catch (err) {
+    console.error("Failed to clear referee match session:", err);
+  }
+}
+
+function getStoredRefereeSession(): { matchCode: string | null; refereeName: string } {
+  if (typeof window === "undefined") return { matchCode: null, refereeName: "" };
+  try {
+    const code =
+      sessionStorage.getItem(SESSION_MATCH_CODE_KEY) ||
+      localStorage.getItem(SESSION_MATCH_CODE_KEY) ||
+      null;
+    const name =
+      sessionStorage.getItem(SESSION_REFEREE_NAME_KEY) ||
+      localStorage.getItem(SESSION_REFEREE_NAME_KEY) ||
+      "";
+    return { matchCode: code, refereeName: name };
+  } catch {
+    return { matchCode: null, refereeName: "" };
+  }
+}
+
 export default function RefereePortalPage() {
   const supabase = createClient();
 
@@ -53,6 +105,7 @@ export default function RefereePortalPage() {
   // Match State
   const [activeMatch, setActiveMatch] = useState<RefereeMatch | null>(null);
   const [isSearching, setIsSearching] = useState(false);
+  const [isRestoringSession, setIsRestoringSession] = useState(true);
   const [errorMessage, setErrorMessage] = useState("");
   const [copiedCode, setCopiedCode] = useState(false);
 
@@ -63,16 +116,6 @@ export default function RefereePortalPage() {
   const [selectedWinnerTeam, setSelectedWinnerTeam] = useState<"team1" | "team2" | null>(null);
   const [scoreNotesInput, setScoreNotesInput] = useState("");
   const [completeError, setCompleteError] = useState("");
-
-  // Load saved referee name on mount
-  useEffect(() => {
-    if (typeof window !== "undefined") {
-      const savedName = localStorage.getItem("sportsops_referee_name");
-      if (savedName) {
-        setRefereeName(savedName);
-      }
-    }
-  }, []);
 
   // Format 12-hour time matching Admin Play Area Management
   const format12Hour = (isoString?: string | null) => {
@@ -108,12 +151,12 @@ export default function RefereePortalPage() {
     setTimeout(() => setCopiedCode(false), 2000);
   };
 
-  // Core Match Lookup
+  // Core Match Lookup & Persistence
   const fetchMatch = useCallback(
-    async (codeToFind: string, currentRefName: string, silent = false) => {
+    async (codeToFind: string, currentRefName: string, silent = false, isRestoring = false) => {
       const cleanCode = codeToFind.trim().toUpperCase();
       if (!cleanCode) {
-        setErrorMessage("Please enter a 6-character Match Code.");
+        if (!silent) setErrorMessage("Please enter a 6-character Match Code.");
         return;
       }
 
@@ -134,8 +177,13 @@ export default function RefereePortalPage() {
 
         const data = await res.json();
 
-        if (!res.ok || !data.success) {
-          if (!silent) {
+        if (!res.ok || !data.success || !data.match) {
+          if (isRestoring) {
+            // Persisted match code no longer exists / expired
+            clearRefereeActiveMatchSession();
+            setActiveMatch(null);
+            setErrorMessage("Match session expired or is no longer available. Please enter a valid Match Code.");
+          } else if (!silent) {
             setErrorMessage(data.message || "Match not found. Please check the Match Code provided by the committee.");
             setActiveMatch(null);
           }
@@ -145,12 +193,19 @@ export default function RefereePortalPage() {
         setActiveMatch(data.match);
         setErrorMessage("");
 
-        // Save referee name in localStorage if provided
-        if (currentRefName.trim() && typeof window !== "undefined") {
-          localStorage.setItem("sportsops_referee_name", currentRefName.trim());
+        // Persist session state across page refreshes
+        const authoritativeRefName =
+          currentRefName.trim() || data.match.referee_name || "";
+        if (authoritativeRefName) {
+          setRefereeName(authoritativeRefName);
         }
+        saveRefereeSession(cleanCode, authoritativeRefName, data.match.id);
       } catch (err: any) {
-        if (!silent) {
+        if (isRestoring) {
+          clearRefereeActiveMatchSession();
+          setActiveMatch(null);
+          setErrorMessage("Match session expired or is no longer available. Please enter a valid Match Code.");
+        } else if (!silent) {
           setErrorMessage("Failed to look up match. Please check your connection and try again.");
         }
       } finally {
@@ -161,6 +216,25 @@ export default function RefereePortalPage() {
     },
     []
   );
+
+  // Restore Active Match Session on initial page mount
+  useEffect(() => {
+    const { matchCode: savedCode, refereeName: savedName } = getStoredRefereeSession();
+
+    if (savedName) {
+      setRefereeName(savedName);
+    }
+
+    if (savedCode) {
+      setMatchCodeInput(savedCode);
+      // Fetch latest match state from backend to restore session
+      fetchMatch(savedCode, savedName, false, true).finally(() => {
+        setIsRestoringSession(false);
+      });
+    } else {
+      setIsRestoringSession(false);
+    }
+  }, [fetchMatch]);
 
   // Submit Lookup Form
   const handleFindMatch = (e?: React.FormEvent) => {
@@ -224,9 +298,7 @@ export default function RefereePortalPage() {
       }
 
       setActiveMatch(data.match);
-      if (typeof window !== "undefined") {
-        localStorage.setItem("sportsops_referee_name", refereeName.trim());
-      }
+      saveRefereeSession(activeMatch.match_code, refereeName.trim(), data.match.id);
     } catch (err: any) {
       alert("Error starting match: " + (err.message || "Network error"));
     } finally {
@@ -273,6 +345,11 @@ export default function RefereePortalPage() {
 
       setActiveMatch(data.match);
       setShowCompleteModal(false);
+      saveRefereeSession(
+        activeMatch.match_code,
+        refereeName.trim() || data.match.referee_name || "",
+        data.match.id
+      );
     } catch (err: any) {
       setCompleteError("Error completing match: " + (err.message || "Network error"));
     } finally {
@@ -280,8 +357,9 @@ export default function RefereePortalPage() {
     }
   };
 
-  // Reset to Look Up Another Match
+  // Reset to Look Up Another Match (Explicit exit clears session)
   const handleResetToLookup = () => {
+    clearRefereeActiveMatchSession();
     setActiveMatch(null);
     setMatchCodeInput("");
     setErrorMessage("");
@@ -326,7 +404,13 @@ export default function RefereePortalPage() {
 
       {/* Main Container */}
       <main className="flex-1 w-full max-w-lg mx-auto p-4 sm:p-6 flex flex-col">
-        {!activeMatch ? (
+        {isRestoringSession ? (
+          /* Restoring Session Loading State */
+          <div className="my-auto py-16 text-center space-y-3">
+            <Loader2 className="w-8 h-8 animate-spin text-indigo-400 mx-auto" />
+            <p className="text-sm font-semibold text-slate-400">Loading active match session...</p>
+          </div>
+        ) : !activeMatch ? (
           /* ======================================================== */
           /* SCREEN 1: MATCH LOOKUP FORM                               */
           /* ======================================================== */

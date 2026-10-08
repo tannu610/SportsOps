@@ -365,4 +365,100 @@ test('REFEREE MATCH CONTROL PORTAL ACCEPTANCE TEST SUITE', async (t) => {
     assert.strictEqual(lookupData.match.score_notes, '21-18, 21-19');
     assert.strictEqual(lookupData.match.referee_name, 'Referee Amit');
   });
+
+  // TEST 13: Refresh simulation -> multiple lookups return same match without duplicate writes
+  await t.test('13. Refresh simulation -> multiple re-lookups return identical match data', async () => {
+    // 1st simulated refresh
+    const r1 = await fetch(`${baseUrl}/api/referee/lookup`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ matchCode }),
+    });
+    const d1 = await r1.json();
+    assert.strictEqual(r1.status, 200);
+
+    // 2nd simulated refresh
+    const r2 = await fetch(`${baseUrl}/api/referee/lookup`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ matchCode }),
+    });
+    const d2 = await r2.json();
+    assert.strictEqual(r2.status, 200);
+
+    // 3rd simulated refresh
+    const r3 = await fetch(`${baseUrl}/api/referee/lookup`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ matchCode }),
+    });
+    const d3 = await r3.json();
+    assert.strictEqual(r3.status, 200);
+
+    assert.strictEqual(d1.match.match_code, d2.match.match_code);
+    assert.strictEqual(d2.match.match_code, d3.match.match_code);
+    assert.strictEqual(d1.match.status, 'COMPLETED');
+    assert.strictEqual(d2.match.status, 'COMPLETED');
+    assert.strictEqual(d3.match.status, 'COMPLETED');
+  });
+
+  // TEST 14: Enter a different Match Code -> loads second match and persists across refresh
+  await t.test('14. Switch to different Match Code -> loads new match and preserves it across refresh', async () => {
+    const p3 = await createPlayer('Player Three', 'P3');
+    const p4 = await createPlayer('Player Four', 'P4');
+
+    const res = await fetch(`${baseUrl}/api/matches/create`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        eventId,
+        sport: 'Badminton',
+        category: "Men's Singles",
+        phase: 'Round 2',
+        playingArea: 'Court 3',
+        scheduledTime: new Date(Date.now() + 7200000).toISOString(),
+        team1_p1_id: p3.id,
+        team2_p1_id: p4.id,
+      }),
+    });
+    assert.strictEqual(res.status, 200);
+    const data = await res.json();
+    const newMatchCode = data.match.match_code;
+    createdMatchIds.push(data.match.id);
+
+    // Lookup new match
+    const lookup1 = await fetch(`${baseUrl}/api/referee/lookup`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ matchCode: newMatchCode, refereeName: 'Referee Ankur' }),
+    });
+    assert.strictEqual(lookup1.status, 200);
+    const lookup1Data = await lookup1.json();
+    assert.strictEqual(lookup1Data.match.match_code, newMatchCode);
+    assert.strictEqual(lookup1Data.match.status, 'NOTIFIED');
+
+    // Simulated refresh on new match
+    const refreshLookup = await fetch(`${baseUrl}/api/referee/lookup`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ matchCode: newMatchCode, refereeName: 'Referee Ankur' }),
+    });
+    assert.strictEqual(refreshLookup.status, 200);
+    const refreshData = await refreshLookup.json();
+    assert.strictEqual(refreshData.match.match_code, newMatchCode);
+    assert.strictEqual(refreshData.match.team1[0].name, 'Player Three');
+    assert.strictEqual(refreshData.match.team2[0].name, 'Player Four');
+  });
+
+  // TEST 15: Invalid or deleted Match Code on restore -> rejected with 404
+  await t.test('15. Invalid / deleted Match Code on restore -> rejected with 404 and friendly error', async () => {
+    const res = await fetch(`${baseUrl}/api/referee/lookup`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ matchCode: 'NONEX9' }),
+    });
+    assert.strictEqual(res.status, 404);
+    const data = await res.json();
+    assert.strictEqual(data.error, 'Match not found');
+  });
 });
