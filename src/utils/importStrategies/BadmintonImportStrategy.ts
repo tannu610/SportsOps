@@ -6,6 +6,21 @@ import {
 } from './types';
 import { extractPlayerCode } from '../playerCode';
 
+/**
+ * Normalizes all keys of an input row by removing whitespace, underscores, hyphens, and converting to lowercase.
+ */
+function getNormalizedRow(row: Record<string, any>): Record<string, any> {
+  const norm: Record<string, any> = {};
+  if (!row || typeof row !== 'object') return norm;
+  for (const [k, v] of Object.entries(row)) {
+    if (k && v !== undefined && v !== null) {
+      const cleanKey = k.trim().toLowerCase().replace(/[\s_\-]+/g, '');
+      norm[cleanKey] = typeof v === 'string' ? v.trim() : v;
+    }
+  }
+  return norm;
+}
+
 export class BadmintonImportStrategy implements SportImportStrategy {
   readonly sportName = 'Badminton';
   readonly displayName = 'Badminton Player List';
@@ -86,8 +101,12 @@ export class BadmintonImportStrategy implements SportImportStrategy {
 
     rows.forEach((row, index) => {
       const rowNum = index + 2; // 1-indexed, header is row 1
+      const normRow = getNormalizedRow(row);
 
       const empId = String(
+        normRow['employeeid'] ||
+        normRow['empid'] ||
+        normRow['employee'] ||
         row['Employee ID'] ||
         row['Employee Id'] ||
         row['employee_id'] ||
@@ -99,6 +118,9 @@ export class BadmintonImportStrategy implements SportImportStrategy {
       ).trim();
 
       const name = String(
+        normRow['playername'] ||
+        normRow['name'] ||
+        normRow['player'] ||
         row['Name'] ||
         row['Player Name'] ||
         row['name'] ||
@@ -108,18 +130,24 @@ export class BadmintonImportStrategy implements SportImportStrategy {
       ).trim();
 
       const sport = String(
+        normRow['sport'] ||
         row['Sport'] ||
         row['sport'] ||
         'Badminton'
       ).trim();
 
       const category = String(
+        normRow['category'] ||
+        normRow['categoryname'] ||
         row['Category'] ||
         row['category'] ||
         'NA'
       ).trim();
 
       const contact = String(
+        normRow['contact'] ||
+        normRow['mobile'] ||
+        normRow['phone'] ||
         row['Contact'] ||
         row['Mobile'] ||
         row['Phone'] ||
@@ -129,6 +157,7 @@ export class BadmintonImportStrategy implements SportImportStrategy {
       ).trim();
 
       const gender = String(
+        normRow['gender'] ||
         row['Gender'] ||
         row['gender'] ||
         ''
@@ -188,7 +217,15 @@ export class BadmintonImportStrategy implements SportImportStrategy {
         category: category || 'NA',
         contact: contact || null,
         gender: gender || null,
-        rawRowNumber: rowNum
+        rawRowNumber: rowNum,
+        // Canonical aliases for both camelCase and Excel header representations
+        'Employee ID': cleanEmpUpper,
+        'Player Name': name,
+        'playerName': name,
+        'Sport': sport,
+        'Category': category || 'NA',
+        'Mobile': contact || null,
+        'Gender': gender || null
       });
     });
 

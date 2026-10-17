@@ -16,6 +16,22 @@ function normalizeName(name: string): string {
     .replace(/[^a-z0-9]/g, ''); // remove spaces, punctuation
 }
 
+/**
+ * Normalizes all keys of an input row by removing whitespace, underscores, hyphens, and converting to lowercase.
+ * This makes column matching tolerant to formatting variations like 'Team Name ', 'team_name', 'TEAM NAME', etc.
+ */
+function getNormalizedRow(row: Record<string, any>): Record<string, any> {
+  const norm: Record<string, any> = {};
+  if (!row || typeof row !== 'object') return norm;
+  for (const [k, v] of Object.entries(row)) {
+    if (k && v !== undefined && v !== null) {
+      const cleanKey = k.trim().toLowerCase().replace(/[\s_\-]+/g, '');
+      norm[cleanKey] = typeof v === 'string' ? v.trim() : v;
+    }
+  }
+  return norm;
+}
+
 export class CricketImportStrategy implements SportImportStrategy {
   readonly sportName = 'Cricket';
   readonly displayName = 'Cricket Team Roster';
@@ -129,69 +145,96 @@ export class CricketImportStrategy implements SportImportStrategy {
 
     rows.forEach((row, index) => {
       const rowNum = index + 2; // 1-indexed (row 1 is header)
+      const normRow = getNormalizedRow(row);
 
-      // Column name variations
+      // Column name variations with header tolerance (spaces, underscores, casing):
+      // Accepts 'Team Name', 'team_name', 'Team Name ', 'Team', 'teamName', etc.
       const rawTeamName = String(
+        normRow['teamname'] ||
+        normRow['team'] ||
+        row['teamName'] ||
         row['Team Name'] ||
         row['Team'] ||
         row['TeamName'] ||
         row['team_name'] ||
         row['team'] ||
-        row['teamName'] ||
         ''
       ).trim();
 
       const rawPlayerName = String(
+        normRow['playername'] ||
+        normRow['name'] ||
+        normRow['player'] ||
+        row['playerName'] ||
         row['Player Name'] ||
         row['Name'] ||
         row['player_name'] ||
         row['name'] ||
-        row['playerName'] ||
         ''
       ).trim();
 
+      // Accepts 'Captain Name', 'Team Captain Name', 'Team Captain', 'Captain', 'captainName', etc.
       const rawCaptainName = String(
+        normRow['captainname'] ||
+        normRow['teamcaptainname'] ||
+        normRow['teamcaptain'] ||
+        normRow['captain'] ||
+        row['captainName'] ||
         row['Captain Name'] ||
+        row['Team Captain Name'] ||
         row['Team Captain'] ||
         row['Captain'] ||
         row['captain_name'] ||
         row['captain'] ||
-        row['captainName'] ||
         ''
       ).trim();
 
       const rawEmpId = String(
+        normRow['employeeid'] ||
+        normRow['empid'] ||
+        normRow['employee'] ||
+        row['empId'] ||
         row['Employee ID'] ||
         row['Employee Id'] ||
         row['employee_id'] ||
         row['Emp ID'] ||
         row['EmpId'] ||
         row['EmployeeID'] ||
-        row['empId'] ||
         ''
       ).trim();
 
       const rawEmail = String(
+        normRow['email'] ||
+        normRow['emailid'] ||
+        normRow['emailaddress'] ||
+        row['email'] ||
         row['Email'] ||
         row['Email ID'] ||
         row['Email Address'] ||
-        row['email'] ||
         ''
       ).trim();
 
       const rawMobile = String(
-        row['Mobile'] ||
-        row['Mobile No'] ||
-        row['Phone'] ||
-        row['Contact'] ||
+        normRow['mobile'] ||
+        normRow['mobileno'] ||
+        normRow['mobilenumber'] ||
+        normRow['contact'] ||
+        normRow['contactno'] ||
+        normRow['phone'] ||
+        normRow['phoneno'] ||
         row['contact'] ||
         row['mobile'] ||
+        row['Mobile'] ||
+        row['Contact'] ||
+        row['Phone'] ||
         ''
       ).trim();
 
       const rawCategory = String(
-        row['Category'] ||
+        normRow['category'] ||
+        normRow['categoryname'] ||
         row['category'] ||
+        row['Category'] ||
         defaultCategory
       ).trim();
 
@@ -205,7 +248,7 @@ export class CricketImportStrategy implements SportImportStrategy {
       if (!rawTeamName) {
         errors.push({
           rowNumber: rowNum,
-          reason: `Missing Team Name for player: ${rawPlayerName || 'Unknown'}`,
+          reason: `Missing Team Name for player: ${rawPlayerName || 'Unknown'} (EMP: ${rawEmpId || 'N/A'})`,
           rowData: row
         });
         return;
@@ -345,7 +388,13 @@ export class CricketImportStrategy implements SportImportStrategy {
         captainName: rawCaptainName,
         email: rawEmail || null,
         contact: rawMobile || null,
-        rawRowNumber: rowNum
+        rawRowNumber: rowNum,
+        // Canonical aliases for Excel header representations
+        'Team Name': rawTeamName,
+        'Captain Name': rawCaptainName,
+        'Player Name': rawPlayerName,
+        'playerName': rawPlayerName,
+        'Employee ID': cleanEmpUpper
       });
     });
 
@@ -369,6 +418,7 @@ export class CricketImportStrategy implements SportImportStrategy {
       const capInfo = teamToDeclaredCaptain.get(teamKey);
       if (capInfo) {
         r.captainName = capInfo.captainName;
+        r['Captain Name'] = capInfo.captainName;
         r.isCaptain = normalizeName(r.name) === normalizeName(capInfo.captainName);
       }
     });

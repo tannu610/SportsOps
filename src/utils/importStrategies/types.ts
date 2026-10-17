@@ -10,6 +10,7 @@ export interface ParsedPlayerRecord {
   captainName?: string | null;
   isCaptain?: boolean;
   rawRowNumber?: number;
+  [key: string]: any;
 }
 
 export interface ImportError {
