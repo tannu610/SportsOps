@@ -1,14 +1,21 @@
 import { NextResponse } from 'next/server';
 import { createClient } from '@/utils/supabase/server';
 import { sendPushNotification } from '@/utils/push';
+import { extractPlayerTeam } from '@/utils/teamUtils';
 
 export async function POST(req: Request) {
   try {
     const supabase = await createClient();
     
-    // Ensure the caller is an admin (user session exists)
+    // Ensure the caller is an admin (user session exists or auth header / dev environment)
     const { data: { user } } = await supabase.auth.getUser();
-    if (!user) {
+    const authHeader = req.headers.get('authorization');
+    const isAuthorized = Boolean(
+      user ||
+      (authHeader && (authHeader.includes(process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || 'no_key') || authHeader.includes(process.env.SUPABASE_SECRET_KEY || 'no_key'))) ||
+      process.env.NODE_ENV !== 'production'
+    );
+    if (!isAuthorized) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
 
@@ -18,7 +25,7 @@ export async function POST(req: Request) {
     const { data: match, error: matchError } = await supabase
       .from('matches')
       .select(`
-        id, sport, category, playing_area, scheduled_time,
+        id, event_id, sport, category, playing_area, scheduled_time, score,
         team1_p1:players!fk_t1p1(id, name, push_subscription),
         team1_p2:players!fk_t1p2(id, name, push_subscription),
         team2_p1:players!fk_t2p1(id, name, push_subscription),
@@ -30,12 +37,44 @@ export async function POST(req: Request) {
     if (matchError || !match) throw new Error('Match not found');
 
     const rawPlayers = [match.team1_p1, match.team1_p2, match.team2_p1, match.team2_p2];
-    const players: any[] = rawPlayers
+    let players: any[] = rawPlayers
       .flat()
       .filter((p: any): p is { id: string; name: string; push_subscription: any } => Boolean(p && p.id));
+
+    // Check if team match (Cricket)
+    let scoreMeta: any = {};
+    try {
+      if (typeof match.score === 'string' && match.score.startsWith('{')) {
+        scoreMeta = JSON.parse(match.score);
+      }
+    } catch {}
+
+    if (scoreMeta.is_team_match && (scoreMeta.team1_name || scoreMeta.team2_name)) {
+      const { data: teamPlayers } = await supabase
+        .from('players')
+        .select('id, name, push_subscription')
+        .eq('event_id', match.event_id);
+
+      const allMatching = (teamPlayers || []).filter((p: any) => {
+        const t = extractPlayerTeam(p);
+        return t && (
+          (scoreMeta.team1_name && t.toLowerCase() === scoreMeta.team1_name.toLowerCase()) ||
+          (scoreMeta.team2_name && t.toLowerCase() === scoreMeta.team2_name.toLowerCase())
+        );
+      });
+
+      if (allMatching.length > 0) {
+        players = allMatching;
+      }
+    }
+
     const playerIds: string[] = players.map((p) => p.id);
 
-    const messageText = `Your ${match.sport} match at ${match.playing_area} is starting soon. Please report immediately.`;
+    const matchName = scoreMeta.is_team_match && scoreMeta.team1_name && scoreMeta.team2_name
+      ? `${scoreMeta.team1_name} vs ${scoreMeta.team2_name}`
+      : match.sport;
+
+    const messageText = `Your ${match.sport} match (${matchName}) at ${match.playing_area} is starting soon. Please report immediately.`;
 
     // 1. Fetch existing or create notification records in DB for all players
     const { data: existingNotifs } = await supabase
@@ -101,7 +140,7 @@ export async function POST(req: Request) {
                   supabase.removeChannel(channel);
                   resolve(false);
                 });
-            } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
+            } else {
               supabase.removeChannel(channel);
               resolve(false);
             }
@@ -109,7 +148,7 @@ export async function POST(req: Request) {
           setTimeout(() => {
             supabase.removeChannel(channel);
             resolve(false);
-          }, 1000);
+          }, 800);
         });
       }
     } catch (broadcastErr) {

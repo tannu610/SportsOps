@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { createClient } from '@/utils/supabase/server';
 import { extractMatchCode } from '@/utils/matchCode';
+import { extractPlayerTeam } from '@/utils/teamUtils';
 
 export async function POST(req: Request) {
   try {
@@ -24,12 +25,36 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: 'Match not found: ' + (fetchErr?.message || 'Invalid ID') }, { status: 404 });
     }
 
-    const playerIds = [
+    let playerIds = [
       match.team1_p1_id,
       match.team1_p2_id,
       match.team2_p1_id,
       match.team2_p2_id,
     ].filter(Boolean) as string[];
+
+    // If team match (Cricket), retrieve all players belonging to Team 1 and Team 2
+    try {
+      const scoreMeta = typeof match.score === 'string' && match.score.startsWith('{')
+        ? JSON.parse(match.score)
+        : {};
+      if (scoreMeta.is_team_match && (scoreMeta.team1_name || scoreMeta.team2_name)) {
+        const { data: teamPlayers } = await supabase
+          .from('players')
+          .select('*')
+          .eq('event_id', match.event_id);
+
+        const allMatching = (teamPlayers || []).filter((p: any) => {
+          const t = extractPlayerTeam(p);
+          return t && (
+            (scoreMeta.team1_name && t.toLowerCase() === scoreMeta.team1_name.toLowerCase()) ||
+            (scoreMeta.team2_name && t.toLowerCase() === scoreMeta.team2_name.toLowerCase())
+          );
+        });
+        if (allMatching.length > 0) {
+          playerIds = Array.from(new Set([...playerIds, ...allMatching.map((p: any) => p.id)]));
+        }
+      }
+    } catch {}
 
     // 2. Update match status to LIVE
     const { data: updatedMatch, error: matchUpdateErr } = await supabase
@@ -51,14 +76,19 @@ export async function POST(req: Request) {
         .select('id, status')
         .in('id', playerIds);
 
-      const playerMap = new Map((currentPlayers || []).map((p) => [p.id, p]));
+      const playerMap = new Map((currentPlayers || []).map((p: any) => [p.id, p]));
 
       for (const pid of playerIds) {
         const currentP = playerMap.get(pid);
+        const originalStatus =
+          currentP?.previous_status === 'PRESENT' || currentP?.previous_status === 'AVAILABLE'
+            ? currentP.previous_status
+            : (currentP?.status === 'CALLED' ? 'PRESENT' : currentP?.status || null);
+
         await supabase
           .from('players')
           .update({
-            previous_status: currentP?.status || null,
+            previous_status: originalStatus,
             status: 'PLAYING',
           })
           .eq('id', pid);

@@ -78,3 +78,24 @@ export function extractPlayerSource(player: any): 'IMPORT' | 'WALK-IN' {
   }
   return 'IMPORT';
 }
+
+/**
+ * Standard extractor to read a player's team name (for Cricket and team sports).
+ */
+export function extractPlayerTeam(player: any): string | null {
+  if (!player) return null;
+  if (typeof player.team_name === 'string' && player.team_name.trim()) {
+    return player.team_name.trim();
+  }
+  if (typeof player.team === 'string' && player.team.trim()) {
+    return player.team.trim();
+  }
+  const meta = player.push_subscription?._metadata;
+  if (meta && typeof meta.team_name === 'string' && meta.team_name.trim()) {
+    return meta.team_name.trim();
+  }
+  if (meta && typeof meta.team === 'string' && meta.team.trim()) {
+    return meta.team.trim();
+  }
+  return null;
+}

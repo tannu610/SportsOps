@@ -18,6 +18,9 @@ export interface RefereeMatchSummary {
   score_notes: string | null;
   referee_name: string | null;
   completed_at: string | null;
+  team1_name?: string | null;
+  team2_name?: string | null;
+  is_team_match?: boolean;
 }
 
 /**
@@ -30,21 +33,20 @@ export function parseMatchScoreMetadata(rawScore: any): {
   winner_id: string | null;
   winning_team: 'team1' | 'team2' | null;
   completed_at: string | null;
+  team1_name: string | null;
+  team2_name: string | null;
+  is_team_match: boolean;
 } {
-  const result: {
-    score: string | null;
-    referee_name: string | null;
-    winner_name: string | null;
-    winner_id: string | null;
-    winning_team: 'team1' | 'team2' | null;
-    completed_at: string | null;
-  } = {
-    score: null,
-    referee_name: null,
-    winner_name: null,
-    winner_id: null,
-    winning_team: null,
-    completed_at: null,
+  const result = {
+    score: null as string | null,
+    referee_name: null as string | null,
+    winner_name: null as string | null,
+    winner_id: null as string | null,
+    winning_team: null as 'team1' | 'team2' | null,
+    completed_at: null as string | null,
+    team1_name: null as string | null,
+    team2_name: null as string | null,
+    is_team_match: false
   };
 
   if (!rawScore || typeof rawScore !== 'string') {
@@ -62,6 +64,9 @@ export function parseMatchScoreMetadata(rawScore: any): {
         result.winner_id = typeof parsed.winner_id === 'string' ? parsed.winner_id : null;
         result.winning_team = parsed.winning_team === 'team1' || parsed.winning_team === 'team2' ? parsed.winning_team : null;
         result.completed_at = typeof parsed.completed_at === 'string' ? parsed.completed_at : null;
+        result.team1_name = typeof parsed.team1_name === 'string' ? parsed.team1_name : null;
+        result.team2_name = typeof parsed.team2_name === 'string' ? parsed.team2_name : null;
+        result.is_team_match = Boolean(parsed.is_team_match || (parsed.team1_name && parsed.team2_name));
       }
     } catch {
       result.score = trimmed;
@@ -200,10 +205,16 @@ export function sanitizeMatchForReferee(
   const team1: Array<{ id: string; name: string }> = [];
   if (match.team1_p1?.name) team1.push({ id: match.team1_p1.id, name: match.team1_p1.name });
   if (match.team1_p2?.name) team1.push({ id: match.team1_p2.id, name: match.team1_p2.name });
+  if (team1.length === 0 && meta.team1_name) {
+    team1.push({ id: 'team1', name: meta.team1_name });
+  }
 
   const team2: Array<{ id: string; name: string }> = [];
   if (match.team2_p1?.name) team2.push({ id: match.team2_p1.id, name: match.team2_p1.name });
   if (match.team2_p2?.name) team2.push({ id: match.team2_p2.id, name: match.team2_p2.name });
+  if (team2.length === 0 && meta.team2_name) {
+    team2.push({ id: 'team2', name: meta.team2_name });
+  }
 
   let winnerName: string | null = meta.winner_name || null;
   if (!winnerName && match.winner?.name) {
@@ -213,6 +224,9 @@ export function sanitizeMatchForReferee(
     const allP = [...team1, ...team2];
     const found = allP.find((p) => p.id === match.winner_id);
     if (found) winnerName = found.name;
+  }
+  if (!winnerName && meta.is_team_match && meta.winning_team) {
+    winnerName = meta.winning_team === 'team1' ? meta.team1_name : meta.team2_name;
   }
 
   const refereeName = activeRefereeName || meta.referee_name || null;
@@ -229,6 +243,9 @@ export function sanitizeMatchForReferee(
     status: match.status || 'SCHEDULED',
     team1,
     team2,
+    team1_name: meta.team1_name || null,
+    team2_name: meta.team2_name || null,
+    is_team_match: meta.is_team_match,
     winner_id: match.winner_id || meta.winner_id || null,
     winner_name: winnerName,
     winning_team: meta.winning_team || null,

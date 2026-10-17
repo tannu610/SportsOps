@@ -26,6 +26,7 @@ import {
 import { createClient } from "@/utils/supabase/client";
 import { DEFAULT_SPORTS_CONFIG, SPORT_FACILITY_DEFAULTS } from "@/utils/eventConfig";
 import { extractMatchCode } from "@/utils/matchCode";
+import { extractPlayerTeam } from "@/utils/teamUtils";
 
 const PHASES = ["Round 1", "Round 2", "Round 3", "Quarter Final", "Semi Final", "Final"];
 
@@ -43,7 +44,7 @@ type Player = {
 type Match = {
   id: string;
   match_code?: string;
-  score?: string;
+  score?: any;
   sport: string;
   category: string;
   phase: string;
@@ -56,6 +57,45 @@ type Match = {
   team2_p1: Player | null;
   team2_p2: Player | null;
 };
+
+function getMatchTeamNames(match?: Match | null) {
+  if (!match) return { isTeam: false, team1Name: "", team2Name: "" };
+  let scoreObj: any = null;
+  if (typeof match.score === "string") {
+    try {
+      scoreObj = JSON.parse(match.score);
+    } catch {
+      // not JSON
+    }
+  } else if (typeof match.score === "object" && match.score !== null) {
+    scoreObj = match.score;
+  }
+
+  const isTeam = Boolean(
+    scoreObj?.is_team_match ||
+    scoreObj?.team1_name ||
+    scoreObj?.team2_name ||
+    (match.sport && match.sport.toLowerCase().includes("cricket"))
+  );
+
+  const team1Name =
+    scoreObj?.team1_name ||
+    (match.team1_p1
+      ? match.team1_p2
+        ? `${match.team1_p1.name} & ${match.team1_p2.name}`
+        : match.team1_p1.name
+      : "Team 1");
+
+  const team2Name =
+    scoreObj?.team2_name ||
+    (match.team2_p1
+      ? match.team2_p2
+        ? `${match.team2_p1.name} & ${match.team2_p2.name}`
+        : match.team2_p1.name
+      : "Team 2");
+
+  return { isTeam, team1Name, team2Name };
+}
 
 function MatchCodeBadge({ code }: { code?: string }) {
   const [copied, setCopied] = useState(false);
@@ -151,7 +191,10 @@ export default function PlayAreaManagementPage() {
   const [t1p2, setT1p2] = useState("");
   const [t2p1, setT2p1] = useState("");
   const [t2p2, setT2p2] = useState("");
+  const [formTeam1, setFormTeam1] = useState("");
+  const [formTeam2, setFormTeam2] = useState("");
   const [matchTime, setMatchTime] = useState("");
+  const [formReportTime, setFormReportTime] = useState("");
 
   // Load dynamic event configuration and database data
   async function loadAllData() {
@@ -297,6 +340,19 @@ export default function PlayAreaManagementPage() {
     }
   };
 
+  const availableCricketTeams = useMemo(() => {
+    const teamsSet = new Set<string>();
+    players.forEach((p) => {
+      const t = extractPlayerTeam(p);
+      if (t) {
+        if (!p.sport || p.sport.toLowerCase().includes("cricket")) {
+          teamsSet.add(t);
+        }
+      }
+    });
+    return Array.from(teamsSet).sort();
+  }, [players]);
+
   // Open Create Match modal with preselected court
   const openCreateModalForCourt = (courtName: string) => {
     setFormSport(activeSport);
@@ -311,6 +367,22 @@ export default function PlayAreaManagementPage() {
     const hours = String(now.getHours()).padStart(2, "0");
     const mins = String(now.getMinutes()).padStart(2, "0");
     setMatchTime(`${hours}:${mins}`);
+
+    // Set default report time to 10 mins before match time
+    const rDate = new Date(now.getTime() - 10 * 60000);
+    const rh = String(rDate.getHours()).padStart(2, "0");
+    const rm = String(rDate.getMinutes()).padStart(2, "0");
+    setFormReportTime(`${rh}:${rm}`);
+
+    if (activeSport.toLowerCase().includes("cricket")) {
+      if (availableCricketTeams.length >= 2) {
+        setFormTeam1(availableCricketTeams[0]);
+        setFormTeam2(availableCricketTeams[1]);
+      } else if (availableCricketTeams.length === 1) {
+        setFormTeam1(availableCricketTeams[0]);
+        setFormTeam2("");
+      }
+    }
 
     setIsCreating(true);
   };
@@ -333,7 +405,85 @@ export default function PlayAreaManagementPage() {
   // Create match handler
   const handleCreateMatch = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (isSubmitting || !eventId || !t1p1 || !t2p1 || !matchTime) return;
+    if (isSubmitting || !eventId || !matchTime) return;
+
+    const isCricket = formSport.toLowerCase().includes("cricket");
+
+    // CRICKET TEAM MATCH CREATION
+    if (isCricket) {
+      if (!formTeam1 || !formTeam2) {
+        alert("Please select both Team 1 and Team 2.");
+        return;
+      }
+      if (formTeam1.toLowerCase() === formTeam2.toLowerCase()) {
+        alert("Team 1 and Team 2 cannot be the same team.");
+        return;
+      }
+
+      const date = new Date();
+      const [hours, minutes] = matchTime.split(":");
+      date.setHours(Number(hours), Number(minutes), 0, 0);
+      const matchTimestamp = date.toISOString();
+
+      let reportingTimestamp: string | null = null;
+      if (formReportTime) {
+        const rDate = new Date();
+        const [rh, rm] = formReportTime.split(":");
+        rDate.setHours(Number(rh), Number(rm), 0, 0);
+        reportingTimestamp = rDate.toISOString();
+      }
+
+      setIsSubmitting(true);
+      try {
+        const res = await fetch("/api/matches/create", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            eventId,
+            sport: "Cricket",
+            category: formCategory || "Open Cricket",
+            phase: formPhase,
+            playingArea: formArea,
+            scheduledTime: matchTimestamp,
+            reportingTime: reportingTimestamp,
+            team1_name: formTeam1,
+            team2_name: formTeam2
+          })
+        });
+
+        const result = await res.json();
+        if (!res.ok) {
+          alert("Error creating match: " + (result.error || "Failed to create match"));
+          return;
+        }
+
+        // Trigger push notifications
+        if (result.match?.id) {
+          try {
+            await fetch("/api/push/notify", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ matchId: result.match.id })
+            });
+          } catch (notifyErr) {
+            console.error("Notification trigger error:", notifyErr);
+          }
+        }
+
+        setIsCreating(false);
+        setFormTeam1("");
+        setFormTeam2("");
+        setMatchTime("");
+        setFormReportTime("");
+        await loadAllData();
+      } finally {
+        setIsSubmitting(false);
+      }
+      return;
+    }
+
+    // BADMINTON INDIVIDUAL MATCH CREATION
+    if (!t1p1 || !t2p1) return;
 
     const id_t1p1 = getPlayerIdByEmpId(t1p1, formSport, formCategory);
     const id_t2p1 = getPlayerIdByEmpId(t2p1, formSport, formCategory);
@@ -833,11 +983,14 @@ export default function PlayAreaManagementPage() {
                       <h4 className="text-base font-black text-gray-800 dark:text-gray-200">No Match Scheduled</h4>
                       <p className="text-xs text-gray-400 font-medium">Court is open and ready for play.</p>
 
-                      {lastCompletedMatch && (
-                        <div className="pt-2 text-[11px] font-bold text-gray-400">
-                          Last: {lastCompletedMatch.team1_p1?.name} vs {lastCompletedMatch.team2_p1?.name} (Done)
-                        </div>
-                      )}
+                      {lastCompletedMatch && (() => {
+                        const { team1Name: lastT1, team2Name: lastT2 } = getMatchTeamNames(lastCompletedMatch);
+                        return (
+                          <div className="pt-2 text-[11px] font-bold text-gray-400">
+                            Last: {lastT1} vs {lastT2} (Done)
+                          </div>
+                        );
+                      })()}
                     </div>
                   </div>
 
@@ -905,64 +1058,108 @@ export default function PlayAreaManagementPage() {
                     <MatchCodeBadge code={match.match_code} />
 
                     {/* Matchup & Player Responses */}
-                    <div className="space-y-3 bg-gray-50/70 dark:bg-zinc-800/40 p-4 rounded-2xl">
-                      {/* Team 1 */}
-                      <div className="space-y-1.5">
-                        <div className="text-[10px] font-black uppercase tracking-widest text-blue-600 flex items-center gap-1">
-                          <span className="w-1.5 h-1.5 rounded-full bg-blue-600" /> Team 1
-                        </div>
-                        <div className="flex items-center justify-between text-xs font-bold text-gray-800 dark:text-gray-200">
-                          <span className="truncate">{match.team1_p1?.name}</span>
-                          {respT1P1 && (
-                            <span className={`px-2 py-0.5 rounded-md text-[11px] font-black border ${respT1P1.colorClass}`}>
-                              {respT1P1.label}
-                            </span>
-                          )}
-                        </div>
-                        {match.team1_p2 && (
-                          <div className="flex items-center justify-between text-xs font-bold text-gray-800 dark:text-gray-200">
-                            <span className="truncate">{match.team1_p2?.name}</span>
-                            {respT1P2 && (
-                              <span className={`px-2 py-0.5 rounded-md text-[11px] font-black border ${respT1P2.colorClass}`}>
-                                {respT1P2.label}
-                              </span>
+                    {(() => {
+                      const { isTeam, team1Name, team2Name } = getMatchTeamNames(match);
+                      if (isTeam) {
+                        return (
+                          <div className="space-y-3 bg-gray-50/70 dark:bg-zinc-800/40 p-4 rounded-2xl">
+                            {/* Team 1 */}
+                            <div className="space-y-1">
+                              <div className="text-[10px] font-black uppercase tracking-widest text-blue-600 flex items-center justify-between">
+                                <span className="flex items-center gap-1.5">
+                                  <span className="w-1.5 h-1.5 rounded-full bg-blue-600" /> TEAM 1
+                                </span>
+                                <span className="text-[9px] font-bold text-gray-400 uppercase">Cricket Team</span>
+                              </div>
+                              <div className="text-sm font-black text-gray-900 dark:text-white truncate">
+                                {team1Name}
+                              </div>
+                            </div>
+
+                            {/* VS Separator */}
+                            <div className="flex items-center gap-2 text-[10px] font-black text-gray-400 uppercase tracking-widest justify-center">
+                              <div className="h-px bg-gray-200 dark:bg-zinc-700 flex-1" />
+                              VS
+                              <div className="h-px bg-gray-200 dark:bg-zinc-700 flex-1" />
+                            </div>
+
+                            {/* Team 2 */}
+                            <div className="space-y-1">
+                              <div className="text-[10px] font-black uppercase tracking-widest text-rose-600 flex items-center justify-between">
+                                <span className="flex items-center gap-1.5">
+                                  <span className="w-1.5 h-1.5 rounded-full bg-rose-600" /> TEAM 2
+                                </span>
+                                <span className="text-[9px] font-bold text-gray-400 uppercase">Cricket Team</span>
+                              </div>
+                              <div className="text-sm font-black text-gray-900 dark:text-white truncate">
+                                {team2Name}
+                              </div>
+                            </div>
+                          </div>
+                        );
+                      }
+
+                      return (
+                        <div className="space-y-3 bg-gray-50/70 dark:bg-zinc-800/40 p-4 rounded-2xl">
+                          {/* Team 1 */}
+                          <div className="space-y-1.5">
+                            <div className="text-[10px] font-black uppercase tracking-widest text-blue-600 flex items-center gap-1">
+                              <span className="w-1.5 h-1.5 rounded-full bg-blue-600" /> Team 1
+                            </div>
+                            <div className="flex items-center justify-between text-xs font-bold text-gray-800 dark:text-gray-200">
+                              <span className="truncate">{match.team1_p1?.name}</span>
+                              {respT1P1 && (
+                                <span className={`px-2 py-0.5 rounded-md text-[11px] font-black border ${respT1P1.colorClass}`}>
+                                  {respT1P1.label}
+                                </span>
+                              )}
+                            </div>
+                            {match.team1_p2 && (
+                              <div className="flex items-center justify-between text-xs font-bold text-gray-800 dark:text-gray-200">
+                                <span className="truncate">{match.team1_p2?.name}</span>
+                                {respT1P2 && (
+                                  <span className={`px-2 py-0.5 rounded-md text-[11px] font-black border ${respT1P2.colorClass}`}>
+                                    {respT1P2.label}
+                                  </span>
+                                )}
+                              </div>
                             )}
                           </div>
-                        )}
-                      </div>
 
-                      {/* VS Separator */}
-                      <div className="flex items-center gap-2 text-[10px] font-black text-gray-400 uppercase tracking-widest justify-center">
-                        <div className="h-px bg-gray-200 dark:bg-zinc-700 flex-1" />
-                        VS
-                        <div className="h-px bg-gray-200 dark:bg-zinc-700 flex-1" />
-                      </div>
+                          {/* VS Separator */}
+                          <div className="flex items-center gap-2 text-[10px] font-black text-gray-400 uppercase tracking-widest justify-center">
+                            <div className="h-px bg-gray-200 dark:bg-zinc-700 flex-1" />
+                            VS
+                            <div className="h-px bg-gray-200 dark:bg-zinc-700 flex-1" />
+                          </div>
 
-                      {/* Team 2 */}
-                      <div className="space-y-1.5">
-                        <div className="text-[10px] font-black uppercase tracking-widest text-rose-600 flex items-center gap-1">
-                          <span className="w-1.5 h-1.5 rounded-full bg-rose-600" /> Team 2
-                        </div>
-                        <div className="flex items-center justify-between text-xs font-bold text-gray-800 dark:text-gray-200">
-                          <span className="truncate">{match.team2_p1?.name}</span>
-                          {respT2P1 && (
-                            <span className={`px-2 py-0.5 rounded-md text-[11px] font-black border ${respT2P1.colorClass}`}>
-                              {respT2P1.label}
-                            </span>
-                          )}
-                        </div>
-                        {match.team2_p2 && (
-                          <div className="flex items-center justify-between text-xs font-bold text-gray-800 dark:text-gray-200">
-                            <span className="truncate">{match.team2_p2?.name}</span>
-                            {respT2P2 && (
-                              <span className={`px-2 py-0.5 rounded-md text-[11px] font-black border ${respT2P2.colorClass}`}>
-                                {respT2P2.label}
-                              </span>
+                          {/* Team 2 */}
+                          <div className="space-y-1.5">
+                            <div className="text-[10px] font-black uppercase tracking-widest text-rose-600 flex items-center gap-1">
+                              <span className="w-1.5 h-1.5 rounded-full bg-rose-600" /> Team 2
+                            </div>
+                            <div className="flex items-center justify-between text-xs font-bold text-gray-800 dark:text-gray-200">
+                              <span className="truncate">{match.team2_p1?.name}</span>
+                              {respT2P1 && (
+                                <span className={`px-2 py-0.5 rounded-md text-[11px] font-black border ${respT2P1.colorClass}`}>
+                                  {respT2P1.label}
+                                </span>
+                              )}
+                            </div>
+                            {match.team2_p2 && (
+                              <div className="flex items-center justify-between text-xs font-bold text-gray-800 dark:text-gray-200">
+                                <span className="truncate">{match.team2_p2?.name}</span>
+                                {respT2P2 && (
+                                  <span className={`px-2 py-0.5 rounded-md text-[11px] font-black border ${respT2P2.colorClass}`}>
+                                    {respT2P2.label}
+                                  </span>
+                                )}
+                              </div>
                             )}
                           </div>
-                        )}
-                      </div>
-                    </div>
+                        </div>
+                      );
+                    })()}
 
                     {/* Time Details */}
                     <div className="grid grid-cols-2 gap-2 text-xs font-bold bg-white dark:bg-zinc-800/80 p-3 rounded-xl border border-gray-100 dark:border-zinc-800">
@@ -1041,17 +1238,22 @@ export default function PlayAreaManagementPage() {
                     <MatchCodeBadge code={match.match_code} />
 
                     {/* Matchup */}
-                    <div className="bg-gradient-to-br from-indigo-50 to-purple-50 dark:from-zinc-800 dark:to-zinc-800/60 p-4 rounded-2xl space-y-3">
-                      <div className="flex items-center justify-between text-sm font-black text-blue-900 dark:text-blue-300">
-                        <span>{match.team1_p1?.name} {match.team1_p2 ? `& ${match.team1_p2.name}` : ''}</span>
-                        <span className="text-[10px] font-bold uppercase tracking-wider bg-blue-100 text-blue-800 px-2 py-0.5 rounded">Team 1</span>
-                      </div>
-                      <div className="text-center font-black text-xs text-gray-400 tracking-widest uppercase">VS</div>
-                      <div className="flex items-center justify-between text-sm font-black text-rose-900 dark:text-rose-300">
-                        <span>{match.team2_p1?.name} {match.team2_p2 ? `& ${match.team2_p2.name}` : ''}</span>
-                        <span className="text-[10px] font-bold uppercase tracking-wider bg-rose-100 text-rose-800 px-2 py-0.5 rounded">Team 2</span>
-                      </div>
-                    </div>
+                    {(() => {
+                      const { team1Name, team2Name } = getMatchTeamNames(match);
+                      return (
+                        <div className="bg-gradient-to-br from-indigo-50 to-purple-50 dark:from-zinc-800 dark:to-zinc-800/60 p-4 rounded-2xl space-y-3">
+                          <div className="flex items-center justify-between text-sm font-black text-blue-900 dark:text-blue-300">
+                            <span className="truncate">{team1Name}</span>
+                            <span className="text-[10px] font-bold uppercase tracking-wider bg-blue-100 text-blue-800 px-2 py-0.5 rounded">Team 1</span>
+                          </div>
+                          <div className="text-center font-black text-xs text-gray-400 tracking-widest uppercase">VS</div>
+                          <div className="flex items-center justify-between text-sm font-black text-rose-900 dark:text-rose-300">
+                            <span className="truncate">{team2Name}</span>
+                            <span className="text-[10px] font-bold uppercase tracking-wider bg-rose-100 text-rose-800 px-2 py-0.5 rounded">Team 2</span>
+                          </div>
+                        </div>
+                      );
+                    })()}
 
                     <div className="text-xs font-bold text-gray-500 flex items-center gap-2">
                       <Clock className="w-4 h-4 text-emerald-600" /> Match in progress (Scheduled: {format12Hour(match.scheduled_time)})
@@ -1169,94 +1371,170 @@ export default function PlayAreaManagementPage() {
               </div>
 
               {/* Teams Selection */}
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">
-                {/* Team 1 */}
-                <div className="space-y-4 bg-blue-50/60 dark:bg-blue-950/30 p-5 rounded-2xl border border-blue-100 dark:border-blue-900/40">
-                  <h3 className="font-black text-xs text-blue-600 tracking-widest uppercase flex items-center gap-2">
-                    <span className="w-2 h-2 rounded-full bg-blue-600" /> TEAM 1
-                  </h3>
-                  <div className="space-y-1.5">
-                    <label className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">
-                      Player 1 (Emp ID) <span className="text-rose-500">*</span>
-                    </label>
-                    <input
-                      required
-                      type="text"
-                      list="eligible-players"
-                      value={t1p1}
-                      onChange={(e) => setT1p1(e.target.value)}
-                      placeholder="Enter Employee ID..."
-                      className="w-full p-3 border border-blue-200 dark:border-zinc-700 bg-white dark:bg-zinc-800 rounded-xl font-bold text-sm text-blue-900 dark:text-blue-200 outline-none focus:ring-2 focus:ring-blue-500"
-                    />
+              {formSport.toLowerCase().includes("cricket") ? (
+                <div className="space-y-4">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">
+                    {/* Team 1 */}
+                    <div className="space-y-4 bg-blue-50/60 dark:bg-blue-950/30 p-5 rounded-2xl border border-blue-100 dark:border-blue-900/40">
+                      <h3 className="font-black text-xs text-blue-600 tracking-widest uppercase flex items-center gap-2">
+                        <span className="w-2 h-2 rounded-full bg-blue-600" /> TEAM 1 (Cricket Team)
+                      </h3>
+                      <div className="space-y-1.5">
+                        <label className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">
+                          Select Team <span className="text-rose-500">*</span>
+                        </label>
+                        <select
+                          required
+                          value={formTeam1}
+                          onChange={(e) => setFormTeam1(e.target.value)}
+                          className="w-full p-3 border border-blue-200 dark:border-zinc-700 bg-white dark:bg-zinc-800 rounded-xl font-bold text-sm text-blue-900 dark:text-blue-200 outline-none focus:ring-2 focus:ring-blue-500"
+                        >
+                          <option value="">-- Choose Team 1 --</option>
+                          {availableCricketTeams.map((tName) => (
+                            <option key={tName} value={tName} disabled={tName === formTeam2}>
+                              {tName}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                    </div>
+
+                    {/* Team 2 */}
+                    <div className="space-y-4 bg-rose-50/60 dark:bg-rose-950/30 p-5 rounded-2xl border border-rose-100 dark:border-rose-900/40">
+                      <h3 className="font-black text-xs text-rose-600 tracking-widest uppercase flex items-center gap-2">
+                        <span className="w-2 h-2 rounded-full bg-rose-600" /> TEAM 2 (Cricket Team)
+                      </h3>
+                      <div className="space-y-1.5">
+                        <label className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">
+                          Select Team <span className="text-rose-500">*</span>
+                        </label>
+                        <select
+                          required
+                          value={formTeam2}
+                          onChange={(e) => setFormTeam2(e.target.value)}
+                          className="w-full p-3 border border-rose-200 dark:border-zinc-700 bg-white dark:bg-zinc-800 rounded-xl font-bold text-sm text-rose-900 dark:text-rose-200 outline-none focus:ring-2 focus:ring-rose-500"
+                        >
+                          <option value="">-- Choose Team 2 --</option>
+                          {availableCricketTeams.map((tName) => (
+                            <option key={tName} value={tName} disabled={tName === formTeam1}>
+                              {tName}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                    </div>
                   </div>
-                  {formIsDoubles && (
+
+                  {availableCricketTeams.length === 0 && (
+                    <div className="p-3.5 bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-900 rounded-xl text-amber-800 dark:text-amber-300 text-xs font-semibold">
+                      ⚠️ No cricket teams detected for this event yet. Please import a Cricket Team Roster first under the Players &amp; Import page.
+                    </div>
+                  )}
+                </div>
+              ) : (
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">
+                  {/* Team 1 */}
+                  <div className="space-y-4 bg-blue-50/60 dark:bg-blue-950/30 p-5 rounded-2xl border border-blue-100 dark:border-blue-900/40">
+                    <h3 className="font-black text-xs text-blue-600 tracking-widest uppercase flex items-center gap-2">
+                      <span className="w-2 h-2 rounded-full bg-blue-600" /> TEAM 1
+                    </h3>
                     <div className="space-y-1.5">
                       <label className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">
-                        Player 2 (Emp ID) <span className="text-rose-500">*</span>
+                        Player 1 (Emp ID) <span className="text-rose-500">*</span>
                       </label>
                       <input
                         required
                         type="text"
                         list="eligible-players"
-                        value={t1p2}
-                        onChange={(e) => setT1p2(e.target.value)}
+                        value={t1p1}
+                        onChange={(e) => setT1p1(e.target.value)}
                         placeholder="Enter Employee ID..."
                         className="w-full p-3 border border-blue-200 dark:border-zinc-700 bg-white dark:bg-zinc-800 rounded-xl font-bold text-sm text-blue-900 dark:text-blue-200 outline-none focus:ring-2 focus:ring-blue-500"
                       />
                     </div>
-                  )}
-                </div>
-
-                {/* Team 2 */}
-                <div className="space-y-4 bg-rose-50/60 dark:bg-rose-950/30 p-5 rounded-2xl border border-rose-100 dark:border-rose-900/40">
-                  <h3 className="font-black text-xs text-rose-600 tracking-widest uppercase flex items-center gap-2">
-                    <span className="w-2 h-2 rounded-full bg-rose-600" /> TEAM 2
-                  </h3>
-                  <div className="space-y-1.5">
-                    <label className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">
-                      Player 1 (Emp ID) <span className="text-rose-500">*</span>
-                    </label>
-                    <input
-                      required
-                      type="text"
-                      list="eligible-players"
-                      value={t2p1}
-                      onChange={(e) => setT2p1(e.target.value)}
-                      placeholder="Enter Employee ID..."
-                      className="w-full p-3 border border-rose-200 dark:border-zinc-700 bg-white dark:bg-zinc-800 rounded-xl font-bold text-sm text-rose-900 dark:text-rose-200 outline-none focus:ring-2 focus:ring-rose-500"
-                    />
+                    {formIsDoubles && (
+                      <div className="space-y-1.5">
+                        <label className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">
+                          Player 2 (Emp ID) <span className="text-rose-500">*</span>
+                        </label>
+                        <input
+                          required
+                          type="text"
+                          list="eligible-players"
+                          value={t1p2}
+                          onChange={(e) => setT1p2(e.target.value)}
+                          placeholder="Enter Employee ID..."
+                          className="w-full p-3 border border-blue-200 dark:border-zinc-700 bg-white dark:bg-zinc-800 rounded-xl font-bold text-sm text-blue-900 dark:text-blue-200 outline-none focus:ring-2 focus:ring-blue-500"
+                        />
+                      </div>
+                    )}
                   </div>
-                  {formIsDoubles && (
+
+                  {/* Team 2 */}
+                  <div className="space-y-4 bg-rose-50/60 dark:bg-rose-950/30 p-5 rounded-2xl border border-rose-100 dark:border-rose-900/40">
+                    <h3 className="font-black text-xs text-rose-600 tracking-widest uppercase flex items-center gap-2">
+                      <span className="w-2 h-2 rounded-full bg-rose-600" /> TEAM 2
+                    </h3>
                     <div className="space-y-1.5">
                       <label className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">
-                        Player 2 (Emp ID) <span className="text-rose-500">*</span>
+                        Player 1 (Emp ID) <span className="text-rose-500">*</span>
                       </label>
                       <input
                         required
                         type="text"
                         list="eligible-players"
-                        value={t2p2}
-                        onChange={(e) => setT2p2(e.target.value)}
+                        value={t2p1}
+                        onChange={(e) => setT2p1(e.target.value)}
                         placeholder="Enter Employee ID..."
                         className="w-full p-3 border border-rose-200 dark:border-zinc-700 bg-white dark:bg-zinc-800 rounded-xl font-bold text-sm text-rose-900 dark:text-rose-200 outline-none focus:ring-2 focus:ring-rose-500"
                       />
                     </div>
-                  )}
+                    {formIsDoubles && (
+                      <div className="space-y-1.5">
+                        <label className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">
+                          Player 2 (Emp ID) <span className="text-rose-500">*</span>
+                        </label>
+                        <input
+                          required
+                          type="text"
+                          list="eligible-players"
+                          value={t2p2}
+                          onChange={(e) => setT2p2(e.target.value)}
+                          placeholder="Enter Employee ID..."
+                          className="w-full p-3 border border-rose-200 dark:border-zinc-700 bg-white dark:bg-zinc-800 rounded-xl font-bold text-sm text-rose-900 dark:text-rose-200 outline-none focus:ring-2 focus:ring-rose-500"
+                        />
+                      </div>
+                    )}
+                  </div>
                 </div>
-              </div>
+              )}
 
-              {/* Match Time */}
-              <div className="space-y-1.5 max-w-xs">
-                <label className="text-xs font-black text-gray-400 uppercase tracking-widest">
-                  Match Time <span className="text-rose-500">*</span>
-                </label>
-                <input
-                  type="time"
-                  required
-                  value={matchTime}
-                  onChange={(e) => setMatchTime(e.target.value)}
-                  className="w-full p-3.5 border border-gray-200 dark:border-zinc-700 rounded-xl bg-gray-50 dark:bg-zinc-800 text-gray-800 dark:text-gray-200 font-bold text-sm outline-none focus:ring-2 focus:ring-indigo-500"
-                />
+              {/* Match Time & Report Time */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 max-w-md">
+                <div className="space-y-1.5">
+                  <label className="text-xs font-black text-gray-400 uppercase tracking-widest">
+                    Match Time <span className="text-rose-500">*</span>
+                  </label>
+                  <input
+                    type="time"
+                    required
+                    value={matchTime}
+                    onChange={(e) => setMatchTime(e.target.value)}
+                    className="w-full p-3.5 border border-gray-200 dark:border-zinc-700 rounded-xl bg-gray-50 dark:bg-zinc-800 text-gray-800 dark:text-gray-200 font-bold text-sm outline-none focus:ring-2 focus:ring-indigo-500"
+                  />
+                </div>
+
+                <div className="space-y-1.5">
+                  <label className="text-xs font-black text-gray-400 uppercase tracking-widest">
+                    Report Time (Optional)
+                  </label>
+                  <input
+                    type="time"
+                    value={formReportTime}
+                    onChange={(e) => setFormReportTime(e.target.value)}
+                    className="w-full p-3.5 border border-gray-200 dark:border-zinc-700 rounded-xl bg-gray-50 dark:bg-zinc-800 text-gray-800 dark:text-gray-200 font-bold text-sm outline-none focus:ring-2 focus:ring-indigo-500"
+                  />
+                </div>
               </div>
 
               {/* Action Buttons */}
@@ -1298,12 +1576,17 @@ export default function PlayAreaManagementPage() {
               </button>
             </div>
 
-            <div className="text-sm font-bold text-gray-700 dark:text-gray-300">
-              {managingMatch.team1_p1?.name} vs {managingMatch.team2_p1?.name}
-              <div className="text-xs text-gray-400 font-semibold mt-1">
-                {managingMatch.sport} • {managingMatch.category} ({managingMatch.phase})
-              </div>
-            </div>
+            {(() => {
+              const { team1Name, team2Name } = getMatchTeamNames(managingMatch);
+              return (
+                <div className="text-sm font-bold text-gray-700 dark:text-gray-300">
+                  {team1Name} vs {team2Name}
+                  <div className="text-xs text-gray-400 font-semibold mt-1">
+                    {managingMatch.sport} • {managingMatch.category} ({managingMatch.phase})
+                  </div>
+                </div>
+              );
+            })()}
 
             {/* Match Code */}
             <MatchCodeBadge code={managingMatch.match_code} />
@@ -1391,29 +1674,34 @@ export default function PlayAreaManagementPage() {
               </p>
             </div>
 
-            <div className="grid grid-cols-2 gap-4">
-              <button
-                onClick={() => submitMatchResult("team1")}
-                className="p-6 border-2 border-blue-200 dark:border-blue-900 bg-blue-50/50 dark:bg-blue-950/30 hover:bg-blue-100 rounded-3xl text-blue-900 dark:text-blue-200 font-black text-sm flex flex-col items-center transition-all hover:scale-105"
-              >
-                <CheckCircle2 className="w-10 h-10 text-blue-600 mb-3" />
-                Team 1 Wins
-                <span className="text-xs font-semibold text-blue-500 mt-1 truncate max-w-[120px]">
-                  {finishingMatch.match.team1_p1?.name}
-                </span>
-              </button>
+            {(() => {
+              const { team1Name, team2Name } = getMatchTeamNames(finishingMatch.match);
+              return (
+                <div className="grid grid-cols-2 gap-4">
+                  <button
+                    onClick={() => submitMatchResult("team1")}
+                    className="p-6 border-2 border-blue-200 dark:border-blue-900 bg-blue-50/50 dark:bg-blue-950/30 hover:bg-blue-100 rounded-3xl text-blue-900 dark:text-blue-200 font-black text-sm flex flex-col items-center transition-all hover:scale-105"
+                  >
+                    <CheckCircle2 className="w-10 h-10 text-blue-600 mb-3" />
+                    Team 1 Wins
+                    <span className="text-xs font-semibold text-blue-500 mt-1 truncate max-w-[120px]">
+                      {team1Name}
+                    </span>
+                  </button>
 
-              <button
-                onClick={() => submitMatchResult("team2")}
-                className="p-6 border-2 border-rose-200 dark:border-rose-900 bg-rose-50/50 dark:bg-rose-950/30 hover:bg-rose-100 rounded-3xl text-rose-900 dark:text-rose-200 font-black text-sm flex flex-col items-center transition-all hover:scale-105"
-              >
-                <CheckCircle2 className="w-10 h-10 text-rose-600 mb-3" />
-                Team 2 Wins
-                <span className="text-xs font-semibold text-rose-500 mt-1 truncate max-w-[120px]">
-                  {finishingMatch.match.team2_p1?.name}
-                </span>
-              </button>
-            </div>
+                  <button
+                    onClick={() => submitMatchResult("team2")}
+                    className="p-6 border-2 border-rose-200 dark:border-rose-900 bg-rose-50/50 dark:bg-rose-950/30 hover:bg-rose-100 rounded-3xl text-rose-900 dark:text-rose-200 font-black text-sm flex flex-col items-center transition-all hover:scale-105"
+                  >
+                    <CheckCircle2 className="w-10 h-10 text-rose-600 mb-3" />
+                    Team 2 Wins
+                    <span className="text-xs font-semibold text-rose-500 mt-1 truncate max-w-[120px]">
+                      {team2Name}
+                    </span>
+                  </button>
+                </div>
+              );
+            })()}
 
             <button
               onClick={() => setFinishingMatch(null)}

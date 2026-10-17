@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { createClient } from '@/utils/supabase/server';
 import { generateUniqueMatchCode, extractMatchCode } from '@/utils/matchCode';
+import { extractPlayerTeam } from '@/utils/teamUtils';
 
 // In-process locks to prevent concurrent race conditions
 const inFlightPlayerLocks = new Set<string>();
@@ -36,14 +37,278 @@ export async function POST(req: Request) {
       phase = 'Round 1',
       playingArea,
       scheduledTime,
+      reportingTime,
+      // For Badminton / individual matches:
       team1_p1_id,
       team1_p2_id = null,
       team2_p1_id,
       team2_p2_id = null,
+      // For Cricket / team matches:
+      team1_name,
+      team2_name
     } = body;
 
-    if (!eventId || !sport || !playingArea || !scheduledTime || !team1_p1_id || !team2_p1_id) {
+    const isCricket = sport?.toLowerCase() === 'cricket' || Boolean(team1_name && team2_name);
+
+    if (!eventId || !sport || !playingArea || !scheduledTime) {
       return NextResponse.json({ error: 'Missing required match fields' }, { status: 400 });
+    }
+
+    // =========================================================================
+    // BRANCH A: CRICKET TEAM-VS-TEAM MATCH CREATION
+    // =========================================================================
+    if (isCricket) {
+      const cleanTeam1 = String(team1_name || '').trim();
+      const cleanTeam2 = String(team2_name || '').trim();
+
+      if (!cleanTeam1 || !cleanTeam2) {
+        return NextResponse.json({ error: 'Both Team 1 and Team 2 must be selected for a Cricket match.' }, { status: 400 });
+      }
+
+      if (cleanTeam1.toLowerCase() === cleanTeam2.toLowerCase()) {
+        return NextResponse.json({ error: 'Team 1 and Team 2 cannot be the same team.' }, { status: 400 });
+      }
+
+      // 1. Fetch all players for this event
+      const { data: eventPlayers, error: pFetchErr } = await supabase
+        .from('players')
+        .select('*')
+        .eq('event_id', eventId);
+
+      if (pFetchErr) {
+        return NextResponse.json({ error: `Database error: ${pFetchErr.message}` }, { status: 500 });
+      }
+
+      const team1Players = (eventPlayers || []).filter((p: any) => {
+        const t = extractPlayerTeam(p);
+        return t && t.toLowerCase() === cleanTeam1.toLowerCase();
+      });
+
+      const team2Players = (eventPlayers || []).filter((p: any) => {
+        const t = extractPlayerTeam(p);
+        return t && t.toLowerCase() === cleanTeam2.toLowerCase();
+      });
+
+      if (team1Players.length === 0) {
+        return NextResponse.json({ error: `No registered players found for Team 1: "${cleanTeam1}".` }, { status: 400 });
+      }
+
+      if (team2Players.length === 0) {
+        return NextResponse.json({ error: `No registered players found for Team 2: "${cleanTeam2}".` }, { status: 400 });
+      }
+
+      const allPlayerIds = [...team1Players.map((p: any) => p.id), ...team2Players.map((p: any) => p.id)];
+
+      // 2. Conflict checks: Check if any player in either team is currently PLAYING
+      const busyPlayers = (eventPlayers || []).filter(
+        (p: any) => allPlayerIds.includes(p.id) && p.status === 'PLAYING'
+      );
+
+      if (busyPlayers.length > 0) {
+        const names = busyPlayers.map((p: any) => p.name).join(', ');
+        return NextResponse.json(
+          { error: `Player conflict: ${names} is currently playing in a live match (PLAYING) and cannot be scheduled.` },
+          { status: 409 }
+        );
+      }
+
+      // 3. Conflict check: Check if playing area already occupied at scheduledTime
+      const { data: existingOnCourt } = await supabase
+        .from('matches')
+        .select('id, status, playing_area, scheduled_time')
+        .eq('event_id', eventId)
+        .eq('playing_area', playingArea)
+        .eq('scheduled_time', scheduledTime)
+        .not('status', 'in', '("CANCELLED","COMPLETED","WALKOVER")');
+
+      if (existingOnCourt && existingOnCourt.length > 0) {
+        return NextResponse.json(
+          { error: `Court conflict: ${playingArea} is already occupied at this time.` },
+          { status: 409 }
+        );
+      }
+
+      // 4. Generate globally unique 6-character Match Code
+      const existingCodes = new Set<string>();
+      const { data: currentMatches } = await supabase.from('matches').select('id, score');
+      if (currentMatches) {
+        currentMatches.forEach((m: any) => {
+          const c = extractMatchCode(m);
+          if (c) existingCodes.add(c.toUpperCase());
+        });
+      }
+      const matchCode = generateUniqueMatchCode(existingCodes);
+
+      // Score metadata storing team information
+      const scoreMetadata = {
+        match_code: matchCode,
+        team1_name: cleanTeam1,
+        team2_name: cleanTeam2,
+        is_team_match: true,
+        team1_player_ids: team1Players.map((p: any) => p.id),
+        team2_player_ids: team2Players.map((p: any) => p.id)
+      };
+
+      const matchPayload: any = {
+        event_id: eventId,
+        sport: 'Cricket',
+        category: category || 'Open Cricket',
+        phase: phase || 'Round 1',
+        playing_area: playingArea,
+        scheduled_time: scheduledTime,
+        reporting_time: reportingTime || null,
+        team1_p1_id: team1Players[0]?.id || null,
+        team2_p1_id: team2Players[0]?.id || null,
+        status: 'NOTIFIED',
+        match_code: matchCode,
+        score: JSON.stringify(scoreMetadata)
+      };
+
+      let newMatch: any = null;
+      const directInsert = await supabase
+        .from('matches')
+        .insert([matchPayload])
+        .select()
+        .single();
+
+      if (!directInsert.error && directInsert.data) {
+        newMatch = directInsert.data;
+      } else if (
+        directInsert.error &&
+        (directInsert.error.code === 'PGRST204' ||
+          directInsert.error.code === '42703' ||
+          directInsert.error.message?.toLowerCase().includes('match_code'))
+      ) {
+        const fallbackPayload = {
+          event_id: eventId,
+          sport: 'Cricket',
+          category: category || 'Open Cricket',
+          phase: phase || 'Round 1',
+          playing_area: playingArea,
+          scheduled_time: scheduledTime,
+          reporting_time: reportingTime || null,
+          team1_p1_id: team1Players[0]?.id || null,
+          team2_p1_id: team2Players[0]?.id || null,
+          status: 'NOTIFIED',
+          score: JSON.stringify(scoreMetadata)
+        };
+
+        const fbInsert = await supabase
+          .from('matches')
+          .insert([fallbackPayload])
+          .select()
+          .single();
+
+        if (fbInsert.error) {
+          return NextResponse.json({ error: fbInsert.error.message }, { status: 500 });
+        }
+        newMatch = fbInsert.data;
+      } else if (directInsert.error) {
+        return NextResponse.json({ error: directInsert.error.message }, { status: 500 });
+      }
+
+      newMatch = {
+        ...newMatch,
+        match_code: matchCode
+      };
+
+      // 5. Mark all players across both teams as CALLED
+      try {
+        await supabase.rpc('call_players_for_match', { p_player_ids: allPlayerIds });
+      } catch {
+        await supabase.from('players').update({ status: 'CALLED' }).in('id', allPlayerIds);
+      }
+
+      // 6. Automatically identify and notify all players belonging to Team 1 and Team 2
+      const formattedTime = new Date(scheduledTime).toLocaleTimeString('en-US', {
+        hour: 'numeric',
+        minute: '2-digit',
+        hour12: true
+      });
+      const notificationMessage = `Your Cricket match (${cleanTeam1} vs ${cleanTeam2}) at ${playingArea} is scheduled for ${formattedTime} (Match Code: ${matchCode}). Please report immediately.`;
+
+      const notificationInserts = allPlayerIds.map((pid: string) => ({
+        player_id: pid,
+        match_id: newMatch.id,
+        type: 'MATCH_CALLED',
+        message: notificationMessage,
+        read: false
+      }));
+
+      const { data: insertedNotifs } = await supabase
+        .from('notifications')
+        .insert(notificationInserts)
+        .select();
+
+      // Realtime broadcast to each player channel
+      try {
+        for (const pid of allPlayerIds) {
+          const payload = (insertedNotifs || []).find((n: any) => n.player_id === pid) || {
+            id: `gen-${Date.now()}-${pid}`,
+            player_id: pid,
+            match_id: newMatch.id,
+            type: 'MATCH_CALLED',
+            message: notificationMessage,
+            sent_at: new Date().toISOString(),
+            read: false
+          };
+
+          const channel = supabase.channel(`player-notifications-${pid}`);
+          await new Promise((resolve) => {
+            channel.subscribe((status) => {
+              if (status === 'SUBSCRIBED') {
+                channel
+                  .send({
+                    type: 'broadcast',
+                    event: 'new-notification',
+                    payload
+                  })
+                  .then(() => {
+                    supabase.removeChannel(channel);
+                    resolve(true);
+                  })
+                  .catch(() => {
+                    supabase.removeChannel(channel);
+                    resolve(false);
+                  });
+              } else {
+                supabase.removeChannel(channel);
+                resolve(false);
+              }
+            });
+            setTimeout(() => {
+              supabase.removeChannel(channel);
+              resolve(false);
+            }, 800);
+          });
+        }
+      } catch (broadcastErr) {
+        console.error('Realtime broadcast error:', broadcastErr);
+      }
+
+      return NextResponse.json({
+        success: true,
+        is_team_match: true,
+        team1_name: cleanTeam1,
+        team2_name: cleanTeam2,
+        match: {
+          ...newMatch,
+          match_code: matchCode,
+          team1_name: cleanTeam1,
+          team2_name: cleanTeam2
+        },
+        team1PlayersCount: team1Players.length,
+        team2PlayersCount: team2Players.length,
+        totalNotified: allPlayerIds.length,
+        notifications: insertedNotifs
+      });
+    }
+
+    // =========================================================================
+    // BRANCH B: BADMINTON / INDIVIDUAL-PLAYER MATCH CREATION (Existing Flow)
+    // =========================================================================
+    if (!team1_p1_id || !team2_p1_id) {
+      return NextResponse.json({ error: 'Missing required match fields (players)' }, { status: 400 });
     }
 
     const playerIds = [team1_p1_id, team1_p2_id, team2_p1_id, team2_p2_id].filter(Boolean) as string[];
@@ -90,14 +355,14 @@ export async function POST(req: Request) {
 
     try {
       // 1. Defense-in-depth: Check if any selected player is currently PLAYING in a live match
-      const { data: playingPlayers, error: playingErr } = await supabase
+      const { data: playingPlayers } = await supabase
         .from('players')
         .select('id, name, status')
         .in('id', playerIds)
         .eq('status', 'PLAYING');
 
       if (playingPlayers && playingPlayers.length > 0) {
-        const names = playingPlayers.map(p => p.name).join(', ');
+        const names = playingPlayers.map((p: any) => p.name).join(', ');
         return NextResponse.json(
           { error: `Player conflict: ${names} is currently playing in a live match (PLAYING) and cannot be selected for another match.` },
           { status: 409 }
@@ -105,16 +370,12 @@ export async function POST(req: Request) {
       }
 
       // 2. Query database for any active matches at the same scheduled time
-      const { data: activeMatchesAtTime, error: searchError } = await supabase
+      const { data: activeMatchesAtTime } = await supabase
         .from('matches')
         .select('id, status, sport, category, phase, playing_area, scheduled_time, team1_p1_id, team1_p2_id, team2_p1_id, team2_p2_id')
         .eq('event_id', eventId)
         .eq('scheduled_time', scheduledTime)
         .not('status', 'in', '("CANCELLED","COMPLETED","WALKOVER")');
-
-      if (searchError) {
-        console.error('Error checking active matches:', searchError);
-      }
 
       if (activeMatchesAtTime && activeMatchesAtTime.length > 0) {
         // 2a. Check for any overlapping player conflict regardless of court
@@ -131,7 +392,7 @@ export async function POST(req: Request) {
         }
 
         // 2b. Check if court is already booked at this exact time
-        const courtOccupied = activeMatchesAtTime.some(m => m.playing_area === playingArea);
+        const courtOccupied = activeMatchesAtTime.some((m: any) => m.playing_area === playingArea);
         if (courtOccupied) {
           return NextResponse.json(
             { error: `Court conflict: ${playingArea} is already occupied at this time.` },
@@ -162,6 +423,7 @@ export async function POST(req: Request) {
         phase: phase || 'Round 1',
         playing_area: playingArea,
         scheduled_time: scheduledTime,
+        reporting_time: reportingTime || null,
         team1_p1_id,
         team1_p2_id,
         team2_p1_id,
@@ -196,6 +458,7 @@ export async function POST(req: Request) {
           phase: phase || 'Round 1',
           playing_area: playingArea,
           scheduled_time: scheduledTime,
+          reporting_time: reportingTime || null,
           team1_p1_id,
           team1_p2_id,
           team2_p1_id,
@@ -230,7 +493,6 @@ export async function POST(req: Request) {
         return NextResponse.json({ error: insertError.message }, { status: 500 });
       }
 
-      // Ensure match_code is attached to match object
       newMatch = {
         ...newMatch,
         match_code: matchCode
@@ -240,7 +502,11 @@ export async function POST(req: Request) {
       await supabase.rpc('call_players_for_match', { p_player_ids: playerIds });
 
       // 6. Create notification records in DB for all players in this match
-      const formattedTime = new Date(scheduledTime).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true });
+      const formattedTime = new Date(scheduledTime).toLocaleTimeString('en-US', {
+        hour: 'numeric',
+        minute: '2-digit',
+        hour12: true
+      });
       const categoryText = category && category !== 'NA' ? category : (phase || 'Round 1');
       const notificationMessage = `Your ${sport} match (${categoryText}) at ${playingArea} is scheduled for ${formattedTime} (Match Code: ${matchCode}). Please report immediately.`;
 
@@ -252,19 +518,15 @@ export async function POST(req: Request) {
         read: false
       }));
 
-      const { data: insertedNotifs, error: notifErr } = await supabase
+      const { data: insertedNotifs } = await supabase
         .from('notifications')
         .insert(notificationInserts)
         .select();
 
-      if (notifErr) {
-        console.error('Error creating player notifications:', notifErr);
-      }
-
-      // 6. Broadcast notification via Realtime channels to open player pages
+      // 7. Broadcast notification via Realtime channels to open player pages
       try {
         for (const pid of playerIds) {
-          const insertedNotif = (insertedNotifs || []).find(n => n.player_id === pid);
+          const insertedNotif = (insertedNotifs || []).find((n: any) => n.player_id === pid);
           const payload = insertedNotif || {
             id: `gen-${Date.now()}-${pid}`,
             player_id: pid,
@@ -293,7 +555,7 @@ export async function POST(req: Request) {
                     supabase.removeChannel(channel);
                     resolve(false);
                   });
-              } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
+              } else {
                 supabase.removeChannel(channel);
                 resolve(false);
               }
@@ -301,7 +563,7 @@ export async function POST(req: Request) {
             setTimeout(() => {
               supabase.removeChannel(channel);
               resolve(false);
-            }, 1000);
+            }, 800);
           });
         }
       } catch (broadcastErr) {

@@ -1,10 +1,11 @@
 "use client";
 
 import { useState, useEffect, useMemo } from "react";
-import { Upload, Download, Search, Plus, CheckCircle, AlertTriangle, X, Filter, RotateCcw } from "lucide-react";
+import { Upload, Download, Search, Plus, CheckCircle, AlertTriangle, X, Filter, RotateCcw, Shield, Users, Layers } from "lucide-react";
 import * as XLSX from "xlsx";
 import { createClient } from "@/utils/supabase/client";
-import { extractPlayerCode, extractPlayerSource } from "@/utils/playerCode";
+import { extractPlayerCode, extractPlayerSource, extractPlayerTeam } from "@/utils/playerCode";
+import { getImportStrategy, detectConfiguredSport } from "@/utils/importStrategies";
 
 type PlayerRecord = {
   id: string; // Employee ID
@@ -15,30 +16,44 @@ type PlayerRecord = {
   name: string;
   sport: string;
   category: string;
+  teamName?: string | null;
   round: string;
   status: string;
   checkIn: string; // ISO string or "-"
 };
 
-type ImportSummary = {
+type ImportSummaryState = {
+  sport: string;
+  isTeamBased: boolean;
   total: number;
   success: number;
-  errors: string[];
+  newPlayers: number;
+  existingPlayers: number;
+  teamsDetected: string[];
+  teamPlayerCounts: Record<string, number>;
+  errors: Array<{ rowNumber: number; reason: string }>;
+  skipped: Array<{ rowNumber: number; reason: string }>;
   parsedData: any[];
 };
 
 export default function PlayersPage() {
   const [isUploading, setIsUploading] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
-  const [importSummary, setImportSummary] = useState<ImportSummary | null>(null);
+  const [importSummary, setImportSummary] = useState<ImportSummaryState | null>(null);
   const [players, setPlayers] = useState<PlayerRecord[]>([]);
   const [eventId, setEventId] = useState<string | null>(null);
+  const [eventName, setEventName] = useState("Sports Day 2026");
+  const [configuredEventSport, setConfiguredEventSport] = useState("Badminton");
+  const [activeImportSport, setActiveImportSport] = useState("Badminton");
+  const [eventConfigRaw, setEventConfigRaw] = useState<any>(null);
+
   const [searchQuery, setSearchQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState("ALL");
   const [sourceFilter, setSourceFilter] = useState("ALL");
   const [genderFilter, setGenderFilter] = useState("ALL");
   const [sportFilter, setSportFilter] = useState("ALL");
   const [categoryFilter, setCategoryFilter] = useState("ALL");
+  const [teamFilter, setTeamFilter] = useState("ALL");
   const [eventSportsMap, setEventSportsMap] = useState<Record<string, string[]>>({});
   
   const supabase = createClient();
@@ -47,18 +62,30 @@ export default function PlayersPage() {
     setIsLoading(true);
     let { data: events } = await supabase.from('events').select('*').limit(1);
     let currentEventId;
+    let currentEvent;
     
     if (!events || events.length === 0) {
       const { data: newEvent } = await supabase.from('events').insert([
         { name: 'Annual Sports Day 2026', sport: 'Multi-Sport', event_date: '2026-09-15', venue: 'HQ Sports Complex' }
       ]).select().single();
-      if (newEvent) currentEventId = newEvent.id;
+      if (newEvent) {
+        currentEventId = newEvent.id;
+        currentEvent = newEvent;
+      }
     } else {
       currentEventId = events[0].id;
+      currentEvent = events[0];
     }
     
-    if (currentEventId) {
+    if (currentEventId && currentEvent) {
       setEventId(currentEventId);
+      setEventName(currentEvent.name || "Sports Day 2026");
+      setEventConfigRaw(currentEvent.configuration);
+
+      // Detect configured sport from Event Configuration
+      const detected = detectConfiguredSport(currentEvent);
+      setConfiguredEventSport(detected);
+      setActiveImportSport(detected);
 
       // Fetch dynamic event configuration (sports & categories) for the active event
       const sportsMap: Record<string, string[]> = {};
@@ -84,7 +111,7 @@ export default function PlayersPage() {
         console.error("Relational sports query error:", err);
       }
 
-      const eventConfigSports = events?.[0]?.configuration?.sports;
+      const eventConfigSports = currentEvent?.configuration?.sports;
       if (eventConfigSports && typeof eventConfigSports === 'object') {
         Object.entries(eventConfigSports).forEach(([sName, cfg]: [string, any]) => {
           if (cfg?.enabled !== false && cfg?.categories && Array.isArray(cfg.categories)) {
@@ -116,10 +143,11 @@ export default function PlayersPage() {
         }
 
         setEventSportsMap(sportsMap);
-        const mapped = dbPlayers.map(p => {
+        const mapped: PlayerRecord[] = dbPlayers.map(p => {
           const playerCode = extractPlayerCode(p) || "-";
           const gender = p.gender || p.push_subscription?._metadata?.gender || "-";
           const source = extractPlayerSource(p);
+          const teamName = extractPlayerTeam(p);
 
           return {
             id: p.employee_id,
@@ -130,6 +158,7 @@ export default function PlayersPage() {
             name: p.name,
             sport: p.sport,
             category: p.category || 'NA',
+            teamName,
             round: p.current_round ? `Round ${p.current_round}` : 'Round 1',
             status: p.status,
             checkIn: p.check_in_time || "-"
@@ -166,6 +195,22 @@ export default function PlayersPage() {
     };
   }, []);
 
+  const activeStrategy = useMemo(() => {
+    return getImportStrategy(activeImportSport);
+  }, [activeImportSport]);
+
+  const handleDownloadTemplate = () => {
+    try {
+      const sampleData = activeStrategy.getTemplateData();
+      const ws = XLSX.utils.json_to_sheet(sampleData);
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, ws, "Roster");
+      XLSX.writeFile(wb, activeStrategy.templateFilename);
+    } catch (err: any) {
+      alert("Error generating template: " + err.message);
+    }
+  };
+
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -178,35 +223,25 @@ export default function PlayersPage() {
         const sheetName = workbook.SheetNames[0];
         const sheet = workbook.Sheets[sheetName];
         const data = XLSX.utils.sheet_to_json(sheet) as any[];
-        
-        const errors: string[] = [];
-        const validRecords: any[] = [];
-        
-        data.forEach((row, index) => {
-          const empId = String(row['Employee ID'] || row['Employee Id'] || row['employee_id'] || '').trim();
-          const name = row['Name'] || row['name'];
-          const sport = row['Sport'] || row['sport'];
-          const category = row['Category'] || row['category'] || 'NA';
-          const contact = row['Contact'] || row['Mobile'] || row['Phone'];
-          const gender = row['Gender'] || row['gender'] || null;
 
-          if (!empId) errors.push(`Row ${index + 2}: Missing Employee ID`);
-          else if (!name) errors.push(`Row ${index + 2}: Missing Player Name (${empId})`);
-          else if (!sport) errors.push(`Row ${index + 2}: Missing Sport for ${name}`);
-          else {
-            if (validRecords.some(r => r.empId === empId && r.sport === sport && r.category === category)) {
-              errors.push(`Row ${index + 2}: Duplicate Employee ID (${empId}) for sport ${sport} - ${category} in file`);
-            } else if (players.some(p => p.id === empId && p.sport === sport && p.category === category)) {
-              errors.push(`Row ${index + 2}: Employee ID (${empId}) already exists for sport ${sport} - ${category} in the system`);
-            } else {
-              validRecords.push({ empId, name, sport, category, contact, gender });
-            }
-          }
+        // Use Sport Import Strategy for validation and preview
+        const validation = activeStrategy.parseAndValidate(data, players, eventConfigRaw);
+
+        setImportSummary({
+          sport: activeStrategy.sportName,
+          isTeamBased: activeStrategy.isTeamBased,
+          total: validation.totalRows,
+          success: validation.validRecords.length,
+          newPlayers: validation.newPlayersCount,
+          existingPlayers: validation.existingPlayersCount,
+          teamsDetected: validation.teamsDetected,
+          teamPlayerCounts: validation.teamPlayerCounts,
+          errors: validation.errors,
+          skipped: validation.skipped,
+          parsedData: validation.validRecords
         });
-
-        setImportSummary({ total: data.length, success: validRecords.length, errors, parsedData: validRecords });
-      } catch (error) {
-        alert("Error parsing file. Please ensure it is a valid Excel or CSV file.");
+      } catch (error: any) {
+        alert("Error parsing file. Please ensure it is a valid Excel (.xlsx) or CSV file.");
       }
     };
     reader.readAsArrayBuffer(file);
@@ -221,6 +256,7 @@ export default function PlayersPage() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           eventId,
+          sport: activeStrategy.sportName,
           records: importSummary.parsedData
         })
       });
@@ -242,6 +278,16 @@ export default function PlayersPage() {
   const availableSports = useMemo(() => {
     return Object.keys(eventSportsMap);
   }, [eventSportsMap]);
+
+  const availableTeams = useMemo(() => {
+    const set = new Set<string>();
+    players.forEach(p => {
+      if (p.teamName) set.add(p.teamName);
+    });
+    return Array.from(set).sort();
+  }, [players]);
+
+  const hasTeamsInSystem = availableTeams.length > 0 || configuredEventSport.toLowerCase().includes('cricket');
 
   const availableCategories = useMemo(() => {
     if (sportFilter !== "ALL") {
@@ -274,7 +320,8 @@ export default function PlayersPage() {
     statusFilter !== "ALL" ||
     genderFilter !== "ALL" ||
     sportFilter !== "ALL" ||
-    categoryFilter !== "ALL";
+    categoryFilter !== "ALL" ||
+    teamFilter !== "ALL";
 
   const clearFilters = () => {
     setSourceFilter("ALL");
@@ -282,14 +329,19 @@ export default function PlayersPage() {
     setGenderFilter("ALL");
     setSportFilter("ALL");
     setCategoryFilter("ALL");
+    setTeamFilter("ALL");
   };
 
   const filteredPlayers = useMemo(() => {
     return players.filter(p => {
+      const q = searchQuery.toLowerCase().trim();
       const matchesSearch =
-        p.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-        p.id.toLowerCase().includes(searchQuery.toLowerCase()) ||
-        p.playerCode.toLowerCase().includes(searchQuery.toLowerCase());
+        !q ||
+        p.name.toLowerCase().includes(q) ||
+        p.id.toLowerCase().includes(q) ||
+        p.playerCode.toLowerCase().includes(q) ||
+        (p.teamName && p.teamName.toLowerCase().includes(q));
+
       const matchesStatus = statusFilter === "ALL" || p.status === statusFilter;
       const matchesSource = sourceFilter === "ALL" || p.source === sourceFilter;
       const matchesGender =
@@ -298,6 +350,9 @@ export default function PlayersPage() {
       const matchesSport =
         sportFilter === "ALL" ||
         (p.sport && p.sport.trim().toLowerCase() === sportFilter.toLowerCase());
+      const matchesTeam =
+        teamFilter === "ALL" ||
+        (p.teamName && p.teamName.toLowerCase() === teamFilter.toLowerCase());
 
       let matchesCategory = true;
       if (categoryFilter !== "ALL") {
@@ -314,10 +369,11 @@ export default function PlayersPage() {
         matchesSource &&
         matchesGender &&
         matchesSport &&
-        matchesCategory
+        matchesCategory &&
+        matchesTeam
       );
     });
-  }, [players, searchQuery, statusFilter, sourceFilter, genderFilter, sportFilter, categoryFilter]);
+  }, [players, searchQuery, statusFilter, sourceFilter, genderFilter, sportFilter, categoryFilter, teamFilter]);
 
   const uniqueStatuses = Array.from(new Set(players.map(p => p.status)));
 
@@ -334,45 +390,190 @@ export default function PlayersPage() {
     <div className="space-y-6">
       <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
         <div>
+          <div className="flex items-center gap-2 text-blue-600 dark:text-blue-400 text-xs font-black uppercase tracking-wider mb-1">
+            <Shield className="w-3.5 h-3.5" />
+            Event: {eventName} • Configured Sport: {configuredEventSport}
+          </div>
           <h1 className="text-2xl font-bold tracking-tight">Players & Import</h1>
-          <p className="text-sm text-gray-500">Manage registered players, track walk-in registrations, and update attendance.</p>
+          <p className="text-sm text-gray-500">
+            {configuredEventSport.toLowerCase() === 'cricket'
+              ? 'Manage cricket teams, player rosters, and match-day attendance.'
+              : 'Manage registered players, track walk-in registrations, and update attendance.'}
+          </p>
         </div>
         
         <div className="flex gap-3 w-full sm:w-auto">
           <button 
             onClick={() => { setIsUploading(true); setImportSummary(null); }}
-            className="flex-1 sm:flex-none flex items-center justify-center px-4 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700 transition-colors"
+            className="flex-1 sm:flex-none flex items-center justify-center px-4 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700 transition-colors shadow-sm"
           >
             <Upload className="w-4 h-4 mr-2" />
-            Import File
+            Import {activeStrategy.sportName} Roster
           </button>
         </div>
       </div>
 
       {isUploading && (
-        <div className="p-6 bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-xl relative shadow-md">
-          <button onClick={() => setIsUploading(false)} className="absolute top-4 right-4 text-gray-400 hover:text-gray-600"><X className="w-5 h-5" /></button>
+        <div className="p-6 bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-2xl relative shadow-md animate-in fade-in duration-150">
+          <button onClick={() => setIsUploading(false)} className="absolute top-4 right-4 text-gray-400 hover:text-gray-600 p-1"><X className="w-5 h-5" /></button>
           
           {!importSummary ? (
-            <>
-              <h3 className="font-semibold text-blue-900 dark:text-blue-300 mb-2">Import from MS Teams Forms</h3>
-              <p className="text-sm text-blue-700 dark:text-blue-400 mb-4">Upload the Excel or CSV export. Columns: 'Employee ID', 'Name', 'Sport', 'Mobile' (optional), 'Gender' (optional).</p>
-              <div className="flex items-center justify-center w-full">
-                <label className="flex flex-col items-center justify-center w-full h-32 border-2 border-blue-400 border-dashed rounded-lg cursor-pointer bg-white dark:bg-zinc-900 hover:bg-blue-100/50 transition-colors">
-                  <div className="flex flex-col items-center justify-center pt-5 pb-6">
-                    <Upload className="w-8 h-8 text-blue-500 mb-3" />
-                    <p className="mb-2 text-sm text-gray-500"><span className="font-semibold">Click to upload</span></p>
+            <div className="space-y-4">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                <div>
+                  <div className="flex items-center gap-2">
+                    <span className="px-2.5 py-0.5 rounded-full text-xs font-black uppercase tracking-wider bg-blue-100 text-blue-800 dark:bg-blue-900/60 dark:text-blue-300">
+                      Current Event: {configuredEventSport}
+                    </span>
+                  </div>
+                  <h3 className="font-bold text-lg text-blue-950 dark:text-blue-100 mt-1">
+                    Upload {activeStrategy.displayName}
+                  </h3>
+                  <p className="text-xs text-blue-700 dark:text-blue-300 mt-0.5 font-medium">
+                    Expected columns: <span className="font-mono font-bold text-blue-900 dark:text-blue-200">{activeStrategy.expectedColumnsDescription}</span>
+                  </p>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={handleDownloadTemplate}
+                  className="inline-flex items-center gap-1.5 px-3.5 py-2 bg-white dark:bg-zinc-800 hover:bg-blue-100/50 text-blue-700 dark:text-blue-300 border border-blue-300 dark:border-blue-700 rounded-xl text-xs font-bold transition-colors shadow-xs"
+                >
+                  <Download className="w-3.5 h-3.5 text-blue-600 dark:text-blue-400" />
+                  Download Template
+                </button>
+              </div>
+
+              {/* Upload Dropzone */}
+              <div className="flex items-center justify-center w-full pt-1">
+                <label className="flex flex-col items-center justify-center w-full h-36 border-2 border-blue-400 border-dashed rounded-xl cursor-pointer bg-white dark:bg-zinc-900 hover:bg-blue-100/30 transition-colors">
+                  <div className="flex flex-col items-center justify-center pt-5 pb-6 text-center">
+                    <Upload className="w-8 h-8 text-blue-500 mb-2" />
+                    <p className="mb-1 text-sm font-semibold text-gray-700 dark:text-gray-200">
+                      Click to upload {activeStrategy.sportName} file
+                    </p>
+                    <p className="text-xs text-gray-400">
+                      Excel (.xlsx, .xls) or CSV format
+                    </p>
                   </div>
                   <input type="file" className="hidden" accept=".csv, application/vnd.openxmlformats-officedocument.spreadsheetml.sheet, application/vnd.ms-excel" onChange={handleFileUpload} />
                 </label>
               </div>
-            </>
+            </div>
           ) : (
-            <div className="space-y-4">
-              <h3 className="font-semibold text-gray-900 dark:text-gray-100 flex items-center"><CheckCircle className="w-5 h-5 text-green-500 mr-2" />Import Summary</h3>
-              <div className="flex gap-4">
-                <button onClick={() => setImportSummary(null)} className="px-4 py-2 border rounded-lg text-sm">Cancel</button>
-                <button onClick={confirmImport} disabled={importSummary.success === 0} className="px-4 py-2 bg-blue-600 text-white rounded-lg text-sm disabled:opacity-50">
+            /* Clear Import Summary Preview Modal before committing */
+            <div className="space-y-5">
+              <div className="flex items-center justify-between pb-3 border-b border-blue-200 dark:border-blue-800">
+                <h3 className="font-black text-lg text-gray-900 dark:text-gray-100 flex items-center gap-2">
+                  <CheckCircle className="w-5 h-5 text-emerald-500" />
+                  Import Summary: {importSummary.sport}
+                </h3>
+                <span className="text-xs font-bold text-gray-500">
+                  Total rows parsed: {importSummary.total}
+                </span>
+              </div>
+
+              {/* Cricket Teams Detected Section */}
+              {importSummary.isTeamBased && (
+                <div className="bg-white dark:bg-zinc-900 p-4 rounded-xl border border-blue-200 dark:border-blue-800 space-y-2">
+                  <div className="flex items-center justify-between text-xs font-black uppercase tracking-wider text-blue-800 dark:text-blue-300">
+                    <span className="flex items-center gap-1.5">
+                      <Users className="w-4 h-4 text-blue-600" />
+                      Teams Detected ({importSummary.teamsDetected.length}):
+                    </span>
+                  </div>
+                  {importSummary.teamsDetected.length > 0 ? (
+                    <div className="flex flex-wrap gap-2 pt-1">
+                      {importSummary.teamsDetected.map((teamName) => (
+                        <div
+                          key={teamName}
+                          className="px-3 py-1 bg-blue-50 dark:bg-blue-950/60 border border-blue-200 dark:border-blue-800 rounded-lg text-xs font-black text-blue-900 dark:text-blue-200 flex items-center gap-1.5"
+                        >
+                          <span>{teamName}</span>
+                          <span className="bg-blue-200 dark:bg-blue-800 text-blue-900 dark:text-blue-100 px-1.5 py-0.2 rounded text-[10px]">
+                            {importSummary.teamPlayerCounts[teamName] || 0} players
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="text-xs text-rose-600 font-bold">No valid teams detected in file.</p>
+                  )}
+                </div>
+              )}
+
+              {/* Statistics Grid */}
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs">
+                <div className="p-3 bg-white dark:bg-zinc-900 rounded-xl border border-gray-200 dark:border-zinc-800">
+                  <span className="text-[10px] font-bold uppercase tracking-wider text-gray-400 block">Total Players</span>
+                  <span className="text-xl font-black text-gray-900 dark:text-white mt-0.5 block">{importSummary.success}</span>
+                </div>
+                <div className="p-3 bg-emerald-50 dark:bg-emerald-950/40 rounded-xl border border-emerald-200 dark:border-emerald-800">
+                  <span className="text-[10px] font-bold uppercase tracking-wider text-emerald-700 dark:text-emerald-300 block">New Players</span>
+                  <span className="text-xl font-black text-emerald-700 dark:text-emerald-300 mt-0.5 block">{importSummary.newPlayers}</span>
+                  <span className="text-[10px] text-emerald-600 font-medium block">Will receive Player Codes</span>
+                </div>
+                <div className="p-3 bg-indigo-50 dark:bg-indigo-950/40 rounded-xl border border-indigo-200 dark:border-indigo-800">
+                  <span className="text-[10px] font-bold uppercase tracking-wider text-indigo-700 dark:text-indigo-300 block">Existing Players</span>
+                  <span className="text-xl font-black text-indigo-700 dark:text-indigo-300 mt-0.5 block">{importSummary.existingPlayers}</span>
+                  <span className="text-[10px] text-indigo-600 font-medium block">Retain Player Codes</span>
+                </div>
+                <div className="p-3 bg-amber-50 dark:bg-amber-950/40 rounded-xl border border-amber-200 dark:border-amber-800">
+                  <span className="text-[10px] font-bold uppercase tracking-wider text-amber-700 dark:text-amber-300 block">Skipped / Invalid</span>
+                  <span className="text-xl font-black text-amber-700 dark:text-amber-300 mt-0.5 block">
+                    {importSummary.errors.length + importSummary.skipped.length}
+                  </span>
+                </div>
+              </div>
+
+              {/* Error messages if any */}
+              {importSummary.errors.length > 0 && (
+                <div className="p-4 bg-rose-50 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-900 rounded-xl space-y-2 max-h-40 overflow-y-auto text-xs">
+                  <div className="font-black text-rose-800 dark:text-rose-300 flex items-center gap-1.5">
+                    <AlertTriangle className="w-4 h-4 text-rose-600" />
+                    Validation Errors ({importSummary.errors.length}):
+                  </div>
+                  <ul className="list-disc pl-5 space-y-1 text-rose-700 dark:text-rose-400 font-medium">
+                    {importSummary.errors.map((err, i) => (
+                      <li key={i}>
+                        <span className="font-bold">Row {err.rowNumber}:</span> {err.reason}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+
+              {/* Skipped messages if any */}
+              {importSummary.skipped.length > 0 && (
+                <div className="p-3 bg-gray-100 dark:bg-zinc-800/80 rounded-xl space-y-1 max-h-28 overflow-y-auto text-xs">
+                  <div className="font-bold text-gray-600 dark:text-gray-300">
+                    Skipped Rows ({importSummary.skipped.length}):
+                  </div>
+                  <ul className="list-disc pl-5 space-y-0.5 text-gray-500 font-medium text-[11px]">
+                    {importSummary.skipped.map((s, i) => (
+                      <li key={i}>
+                        <span className="font-semibold">Row {s.rowNumber}:</span> {s.reason}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+
+              {/* Action Buttons */}
+              <div className="flex items-center justify-end gap-3 pt-2">
+                <button
+                  type="button"
+                  onClick={() => setImportSummary(null)}
+                  className="px-4 py-2 border border-gray-300 dark:border-zinc-700 rounded-xl text-xs font-black hover:bg-gray-100 dark:hover:bg-zinc-800 transition"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={confirmImport}
+                  disabled={importSummary.success === 0}
+                  className="px-6 py-2.5 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-black shadow-md shadow-blue-600/25 transition disabled:opacity-50 cursor-pointer"
+                >
                   Import {importSummary.success} Players
                 </button>
               </div>
@@ -387,12 +588,27 @@ export default function PlayersPage() {
           <div className="relative">
             <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
             <input 
-              type="text" placeholder="Search by name, EMP ID, or Player Code..." 
+              type="text" placeholder="Search by name, EMP ID, Player Code, or Team..." 
               value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)}
               className="pl-9 pr-4 py-2 border border-gray-300 dark:border-zinc-700 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white dark:bg-zinc-950 w-72"
             />
           </div>
           <div className="flex flex-wrap items-center gap-3">
+            {/* Team Filter (shown when teams exist or sport is Cricket) */}
+            {hasTeamsInSystem && (
+              <div className="flex items-center gap-2">
+                <span className="text-xs text-gray-500 font-medium">Team:</span>
+                <select 
+                  value={teamFilter} 
+                  onChange={(e) => setTeamFilter(e.target.value)}
+                  className="py-1.5 px-3 border border-gray-300 dark:border-zinc-700 rounded-lg text-sm bg-white dark:bg-zinc-950 focus:outline-none focus:ring-2 focus:ring-blue-500 font-medium"
+                >
+                  <option value="ALL">All Teams</option>
+                  {availableTeams.map(t => <option key={t} value={t}>{t}</option>)}
+                </select>
+              </div>
+            )}
+
             {/* Source Filter */}
             <div className="flex items-center gap-2">
               <span className="text-xs text-gray-500 font-medium">Source:</span>
@@ -508,6 +724,7 @@ export default function PlayersPage() {
                   <th className="px-4 py-3 font-medium">EMP ID</th>
                   <th className="px-4 py-3 font-medium">Player Code</th>
                   <th className="px-4 py-3 font-medium">Name</th>
+                  {hasTeamsInSystem && <th className="px-4 py-3 font-medium">Team</th>}
                   <th className="px-4 py-3 font-medium">Gender</th>
                   <th className="px-4 py-3 font-medium">Sport / Category</th>
                   <th className="px-4 py-3 font-medium">Source</th>
@@ -521,6 +738,17 @@ export default function PlayersPage() {
                     <td className="px-4 py-3 font-medium font-mono text-xs">{player.id}</td>
                     <td className="px-4 py-3 font-bold font-mono text-xs text-blue-600 dark:text-blue-400">{player.playerCode}</td>
                     <td className="px-4 py-3 font-medium text-gray-900 dark:text-gray-100">{player.name}</td>
+                    {hasTeamsInSystem && (
+                      <td className="px-4 py-3">
+                        {player.teamName ? (
+                          <span className="px-2.5 py-0.5 rounded-lg text-xs font-black bg-indigo-50 dark:bg-indigo-950/50 text-indigo-700 dark:text-indigo-300 border border-indigo-200 dark:border-indigo-800">
+                            {player.teamName}
+                          </span>
+                        ) : (
+                          <span className="text-gray-400 text-xs">-</span>
+                        )}
+                      </td>
+                    )}
                     <td className="px-4 py-3 text-xs text-gray-600 dark:text-gray-300">{player.gender}</td>
                     <td className="px-4 py-3 text-xs">
                       <span className="font-semibold text-gray-800 dark:text-gray-200">{player.sport}</span>

@@ -71,8 +71,14 @@ export function formatMatchHistoryEntry(match: any): MatchHistoryEntry | null {
   if (match.team2_p1?.name) team2.push({ id: match.team2_p1.id, name: match.team2_p1.name });
   if (match.team2_p2?.name) team2.push({ id: match.team2_p2.id, name: match.team2_p2.name });
 
-  const team1Names = team1.map((p) => p.name).join(' & ') || 'Team 1';
-  const team2Names = team2.map((p) => p.name).join(' & ') || 'Team 2';
+  const team1Names = meta.is_team_match && meta.team1_name
+    ? meta.team1_name
+    : team1.map((p) => p.name).join(' & ') || 'Team 1';
+
+  const team2Names = meta.is_team_match && meta.team2_name
+    ? meta.team2_name
+    : team2.map((p) => p.name).join(' & ') || 'Team 2';
+
   const playersDisplay = `${team1Names} vs ${team2Names}`;
 
   let winnerName = meta.winner_name || (match.winner?.name ? match.winner.name : null);

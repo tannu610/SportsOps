@@ -1,23 +1,48 @@
 import { NextResponse } from 'next/server';
 import { createClient } from '@/utils/supabase/server';
 import { extractPlayerCode, generateUniquePlayerCode } from '@/utils/playerCode';
+import { getImportStrategy, detectConfiguredSport } from '@/utils/importStrategies';
 
 export async function POST(req: Request) {
   try {
     const supabase = await createClient();
     const body = await req.json();
 
-    const { eventId, records } = body;
+    const rawRecords = body.records || body.parsedRows || body.players;
+    const { eventId, sport: requestedSport } = body;
 
     if (!eventId) {
       return NextResponse.json({ error: 'Event ID is required' }, { status: 400 });
     }
 
-    if (!records || !Array.isArray(records) || records.length === 0) {
+    if (!rawRecords || !Array.isArray(rawRecords) || rawRecords.length === 0) {
       return NextResponse.json({ error: 'No player records provided for import' }, { status: 400 });
     }
 
-    // 1. Fetch all existing players across the system to track player codes & duplicates
+    const records = rawRecords;
+
+    // 1. Fetch current event from database to detect configured sport
+    const { data: event, error: eventErr } = await supabase
+      .from('events')
+      .select('*')
+      .eq('id', eventId)
+      .maybeSingle();
+
+    if (eventErr) {
+      return NextResponse.json({ error: `Event error: ${eventErr.message}` }, { status: 500 });
+    }
+
+    // Detect sport: Event configuration is primary source of truth.
+    // If request specifies a sport that is configured/enabled for this event, allow that.
+    let targetSport = requestedSport;
+    if (!targetSport) {
+      targetSport = detectConfiguredSport(event);
+    }
+
+    // 2. Resolve Sport Import Strategy (Concept: importStrategy = getImportStrategy(event.sport))
+    const importStrategy = getImportStrategy(targetSport);
+
+    // 3. Fetch all existing players across the system for player codes & duplicate detection
     const { data: allPlayers, error: fetchErr } = await supabase
       .from('players')
       .select('*');
@@ -43,19 +68,29 @@ export async function POST(req: Request) {
       existingPlayerTriplets.add(tripKey);
     });
 
+    // 4. Validate and parse records using the sport-specific strategy
+    const validation = importStrategy.parseAndValidate(records, allPlayers || [], event?.configuration);
+
+    if (validation.validRecords.length === 0 && validation.errors.length > 0) {
+      return NextResponse.json({
+        error: `Validation failed: ${validation.errors[0]?.reason}`,
+        details: validation.errors
+      }, { status: 400 });
+    }
+
     const toInsert: any[] = [];
     const updatedExisting: any[] = [];
     const batchEmpCodes = new Map<string, string>();
 
-    for (const r of records) {
-      const cleanEmpId = String(r.empId || r.employee_id || '').trim().toUpperCase();
-      const cleanName = String(r.name || '').trim();
-      const cleanSport = String(r.sport || '').trim();
-      const cleanCategory = r.category ? String(r.category).trim() : 'NA';
-      const cleanContact = r.contact ? String(r.contact).trim() : null;
-      const cleanGender = r.gender ? String(r.gender).trim() : null;
-
-      if (!cleanEmpId || !cleanName || !cleanSport) continue;
+    for (const r of validation.validRecords) {
+      const cleanEmpId = r.empId;
+      const cleanName = r.name;
+      const cleanSport = r.sport || importStrategy.sportName;
+      const cleanCategory = r.category || 'NA';
+      const cleanContact = r.contact || null;
+      const cleanGender = r.gender || null;
+      const cleanEmail = r.email || null;
+      const cleanTeamName = r.teamName || null;
 
       // Determine Player Code:
       // 1) From existing player in database
@@ -79,7 +114,12 @@ export async function POST(req: Request) {
         for (const p of existingWithoutCode) {
           const existingMeta = p.push_subscription?._metadata || {};
           const existingSource = (p as any).source || existingMeta.source;
-          const updatedMeta = { ...existingMeta, player_code: playerCode, source: existingSource || 'IMPORT' };
+          const updatedMeta = {
+            ...existingMeta,
+            player_code: playerCode,
+            source: existingSource || 'IMPORT',
+            ...(cleanTeamName ? { team_name: cleanTeamName } : {})
+          };
           const updatedPush = { ...(p.push_subscription || {}), _metadata: updatedMeta };
 
           const { error: upErr } = await supabase
@@ -109,6 +149,16 @@ export async function POST(req: Request) {
       }
       existingPlayerTriplets.add(tripKey);
 
+      const metadata: Record<string, any> = {
+        player_code: playerCode,
+        source: 'IMPORT',
+        gender: cleanGender,
+        email: cleanEmail
+      };
+      if (cleanTeamName) {
+        metadata.team_name = cleanTeamName;
+      }
+
       toInsert.push({
         event_id: eventId,
         employee_id: cleanEmpId,
@@ -122,11 +172,7 @@ export async function POST(req: Request) {
         current_round: 1,
         player_code: playerCode,
         push_subscription: {
-          _metadata: {
-            player_code: playerCode,
-            source: 'IMPORT',
-            gender: cleanGender
-          }
+          _metadata: metadata
         }
       });
     }
@@ -174,9 +220,25 @@ export async function POST(req: Request) {
 
     return NextResponse.json({
       success: true,
+      sport: importStrategy.sportName,
+      isTeamBased: importStrategy.isTeamBased,
+      teamsDetected: validation.teamsDetected,
+      teamPlayerCounts: validation.teamPlayerCounts,
       insertedCount: insertedData.length,
       updatedCount: updatedExisting.length,
+      skippedCount: validation.skipped.length,
       totalProcessed: records.length,
+      summary: {
+        sport: importStrategy.sportName,
+        isTeamBased: importStrategy.isTeamBased,
+        teamsDetected: validation.teamsDetected.length,
+        teamNames: validation.teamsDetected,
+        totalRows: records.length,
+        newPlayers: insertedData.length,
+        existingPlayers: Math.max(validation.existingPlayersCount, validation.validRecords.length - insertedData.length),
+        skippedRows: validation.skipped.length,
+        duplicateRows: validation.skipped.filter((s) => s.reason.toLowerCase().includes('duplicate')).length
+      },
       players: insertedData.map((p) => ({
         id: p.employee_id,
         dbId: p.id,
@@ -184,6 +246,7 @@ export async function POST(req: Request) {
         name: p.name,
         sport: p.sport,
         category: p.category,
+        teamName: p.push_subscription?._metadata?.team_name || null,
         source: 'IMPORT',
         status: p.status
       }))
