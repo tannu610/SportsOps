@@ -218,9 +218,9 @@ export default function PlayersPage() {
     const reader = new FileReader();
     reader.onload = (evt) => {
       try {
-        const bstr = evt.target?.result;
-        const workbook = XLSX.read(bstr, { type: "binary" });
-        const sheetName = workbook.SheetNames[0];
+        const dataBuffer = evt.target?.result;
+        const workbook = XLSX.read(dataBuffer, { type: "array" });
+        const sheetName = workbook.SheetNames.find(n => /player|roster|import/i.test(n)) || workbook.SheetNames[0];
         const sheet = workbook.Sheets[sheetName];
         const data = XLSX.utils.sheet_to_json(sheet) as any[];
 

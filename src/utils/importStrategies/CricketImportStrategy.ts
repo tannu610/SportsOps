@@ -18,7 +18,7 @@ export class CricketImportStrategy implements SportImportStrategy {
     'Mobile'
   ];
   readonly expectedColumnsDescription =
-    'Team Name, Player Name, Employee ID, Email (optional), Mobile (optional)';
+    'Team Name, Player Name, Employee ID (optional), Email (optional), Mobile (optional)';
   readonly templateFilename = 'Cricket_Team_Roster_Template.xlsx';
 
   getTemplateData(): Record<string, any>[] {
@@ -77,17 +77,25 @@ export class CricketImportStrategy implements SportImportStrategy {
     const errors: ImportError[] = [];
     const skipped: ImportError[] = [];
 
-    // Track existing employee IDs across the system
+    // Track existing players across the system
     const existingEmpMap = new Map<string, any>();
+    const existingTeamPlayersMap = new Map<string, any>(); // key: `${teamName.toLowerCase()}_${playerName.toLowerCase()}`
+
     existingPlayers.forEach((p) => {
       const cleanEmp = String(p.employee_id || '').trim().toUpperCase();
       if (cleanEmp) {
         existingEmpMap.set(cleanEmp, p);
       }
+      const team = String(p.team_name || p.push_subscription?._metadata?.team_name || '').trim().toLowerCase();
+      const name = String(p.name || '').trim().toLowerCase();
+      if (team && name) {
+        existingTeamPlayersMap.set(`${team}_${name}`, p);
+      }
     });
 
     // In-batch duplicate tracking
     const batchSeenEmpIds = new Map<string, { teamName: string; rowNum: number }>();
+    const batchSeenTeamPlayers = new Map<string, { rowNum: number }>();
     const teamsSet = new Set<string>();
     const teamPlayerCounts: Record<string, number> = {};
 
@@ -110,6 +118,7 @@ export class CricketImportStrategy implements SportImportStrategy {
         row['TeamName'] ||
         row['team_name'] ||
         row['team'] ||
+        row['teamName'] ||
         ''
       ).trim();
 
@@ -118,6 +127,7 @@ export class CricketImportStrategy implements SportImportStrategy {
         row['Name'] ||
         row['player_name'] ||
         row['name'] ||
+        row['playerName'] ||
         ''
       ).trim();
 
@@ -128,6 +138,7 @@ export class CricketImportStrategy implements SportImportStrategy {
         row['Emp ID'] ||
         row['EmpId'] ||
         row['EmployeeID'] ||
+        row['empId'] ||
         ''
       ).trim();
 
@@ -165,7 +176,7 @@ export class CricketImportStrategy implements SportImportStrategy {
       if (!rawTeamName) {
         errors.push({
           rowNumber: rowNum,
-          reason: `Missing Team Name for player: ${rawPlayerName || 'Unknown'} (EMP: ${rawEmpId || 'N/A'})`,
+          reason: `Missing Team Name for player: ${rawPlayerName || 'Unknown'}`,
           rowData: row
         });
         return;
@@ -175,46 +186,67 @@ export class CricketImportStrategy implements SportImportStrategy {
       if (!rawPlayerName) {
         errors.push({
           rowNumber: rowNum,
-          reason: `Missing Player Name for Team: "${rawTeamName}" (EMP: ${rawEmpId || 'N/A'})`,
+          reason: `Missing Player Name for Team: "${rawTeamName}"`,
           rowData: row
         });
         return;
       }
 
-      // 3. Validate Employee ID
-      if (!rawEmpId) {
-        errors.push({
-          rowNumber: rowNum,
-          reason: `Missing Employee ID for player "${rawPlayerName}" in Team: "${rawTeamName}"`,
-          rowData: row
-        });
-        return;
-      }
+      let cleanEmpUpper: string;
+      const teamPlayerKey = `${rawTeamName.toLowerCase()}_${rawPlayerName.toLowerCase()}`;
 
-      const cleanEmpUpper = rawEmpId.toUpperCase();
+      // 3. Handle Employee ID and Duplicates
+      if (rawEmpId) {
+        cleanEmpUpper = rawEmpId.toUpperCase();
 
-      // 4. Duplicate checks in uploaded file
-      if (batchSeenEmpIds.has(cleanEmpUpper)) {
-        const prev = batchSeenEmpIds.get(cleanEmpUpper)!;
-        if (prev.teamName.toLowerCase() === rawTeamName.toLowerCase()) {
-          errors.push({
-            rowNumber: rowNum,
-            reason: `Duplicate Player (EMP ID: ${cleanEmpUpper}) listed multiple times in Team "${rawTeamName}" (First seen on Row ${prev.rowNum})`,
-            rowData: row
-          });
-        } else {
-          errors.push({
-            rowNumber: rowNum,
-            reason: `Conflict: Player (EMP ID: ${cleanEmpUpper}) assigned to multiple teams: "${prev.teamName}" (Row ${prev.rowNum}) and "${rawTeamName}" (Row ${rowNum})`,
-            rowData: row
-          });
+        if (batchSeenEmpIds.has(cleanEmpUpper)) {
+          const prev = batchSeenEmpIds.get(cleanEmpUpper)!;
+          if (prev.teamName.toLowerCase() === rawTeamName.toLowerCase()) {
+            errors.push({
+              rowNumber: rowNum,
+              reason: `Duplicate Player (EMP ID: ${cleanEmpUpper}) listed multiple times in Team "${rawTeamName}" (First seen on Row ${prev.rowNum})`,
+              rowData: row
+            });
+          } else {
+            errors.push({
+              rowNumber: rowNum,
+              reason: `Conflict: Player (EMP ID: ${cleanEmpUpper}) assigned to multiple teams: "${prev.teamName}" (Row ${prev.rowNum}) and "${rawTeamName}" (Row ${rowNum})`,
+              rowData: row
+            });
+          }
+          return;
         }
-        return;
-      }
-      batchSeenEmpIds.set(cleanEmpUpper, { teamName: rawTeamName, rowNum });
+        batchSeenEmpIds.set(cleanEmpUpper, { teamName: rawTeamName, rowNum });
+      } else {
+        // Employee ID is optional in Cricket team roster
+        // Check for duplicate player within the same team
+        if (batchSeenTeamPlayers.has(teamPlayerKey)) {
+          const prev = batchSeenTeamPlayers.get(teamPlayerKey)!;
+          errors.push({
+            rowNumber: rowNum,
+            reason: `Duplicate Player "${rawPlayerName}" listed multiple times in Team "${rawTeamName}" (First seen on Row ${prev.rowNum})`,
+            rowData: row
+          });
+          return;
+        }
 
-      // Check if player exists in system
-      if (existingEmpMap.has(cleanEmpUpper)) {
+        // Check if player already exists in database for this team to preserve employee_id
+        const existingMatch = existingTeamPlayersMap.get(teamPlayerKey);
+        if (existingMatch && existingMatch.employee_id) {
+          cleanEmpUpper = String(existingMatch.employee_id).trim().toUpperCase();
+        } else {
+          // Generate deterministic internal Employee ID to satisfy DB not-null constraint
+          const slugTeam = rawTeamName.toLowerCase().replace(/[^a-z0-9]/g, '');
+          const slugPlayer = rawPlayerName.toLowerCase().replace(/[^a-z0-9]/g, '');
+          cleanEmpUpper = `CRK-${slugTeam}-${slugPlayer}`.toUpperCase();
+        }
+      }
+
+      batchSeenTeamPlayers.set(teamPlayerKey, { rowNum });
+
+      // Check if player exists in system (for count)
+      const existsInDb = existingEmpMap.has(cleanEmpUpper) || existingTeamPlayersMap.has(teamPlayerKey);
+      if (existsInDb) {
         existingPlayersCount++;
       } else {
         newPlayersCount++;

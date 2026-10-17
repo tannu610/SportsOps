@@ -54,6 +54,7 @@ export async function POST(req: Request) {
     const existingCodes = new Set<string>();
     const empToExistingCode = new Map<string, string>();
     const existingPlayerTriplets = new Set<string>(); // eventId + empId + sport + category
+    const eventTeamPlayerToExisting = new Map<string, any>(); // eventId + teamName + playerName
 
     allPlayers?.forEach((p: any) => {
       const code = extractPlayerCode(p);
@@ -66,6 +67,12 @@ export async function POST(req: Request) {
       }
       const tripKey = `${p.event_id}_${String(p.employee_id).trim().toUpperCase()}_${String(p.sport).trim().toLowerCase()}_${String(p.category || 'NA').trim().toLowerCase()}`;
       existingPlayerTriplets.add(tripKey);
+
+      const teamName = (p.team_name || p.push_subscription?._metadata?.team_name || '').trim().toLowerCase();
+      const pName = String(p.name || '').trim().toLowerCase();
+      if (teamName && pName && p.event_id) {
+        eventTeamPlayerToExisting.set(`${p.event_id}_${teamName}_${pName}`, p);
+      }
     });
 
     // 4. Validate and parse records using the sport-specific strategy
@@ -83,7 +90,7 @@ export async function POST(req: Request) {
     const batchEmpCodes = new Map<string, string>();
 
     for (const r of validation.validRecords) {
-      const cleanEmpId = r.empId;
+      let cleanEmpId = r.empId;
       const cleanName = r.name;
       const cleanSport = r.sport || importStrategy.sportName;
       const cleanCategory = r.category || 'NA';
@@ -92,11 +99,24 @@ export async function POST(req: Request) {
       const cleanEmail = r.email || null;
       const cleanTeamName = r.teamName || null;
 
+      // Check if existing player in this event matches team + name
+      const existingInTeam = cleanTeamName
+        ? eventTeamPlayerToExisting.get(`${eventId}_${cleanTeamName.toLowerCase()}_${cleanName.toLowerCase()}`)
+        : null;
+
+      if (existingInTeam && existingInTeam.employee_id) {
+        cleanEmpId = String(existingInTeam.employee_id).trim().toUpperCase();
+      }
+
       // Determine Player Code:
-      // 1) From existing player in database
-      // 2) From previous record of same employee in this batch
-      // 3) Newly generated unique Player Code
-      let playerCode = empToExistingCode.get(cleanEmpId) || batchEmpCodes.get(cleanEmpId);
+      // 1) From existing player matching team + name in this event
+      // 2) From existing player in database by employee ID
+      // 3) From previous record of same employee in this batch
+      // 4) Newly generated unique Player Code
+      let playerCode =
+        (existingInTeam ? extractPlayerCode(existingInTeam) : null) ||
+        empToExistingCode.get(cleanEmpId) ||
+        batchEmpCodes.get(cleanEmpId);
 
       if (!playerCode) {
         playerCode = generateUniquePlayerCode(existingCodes);
@@ -141,13 +161,19 @@ export async function POST(req: Request) {
         empToExistingCode.set(cleanEmpId, playerCode);
       }
 
-      // Check if duplicate for (event_id, employee_id, sport, category)
+      // Check if duplicate for (event_id, employee_id, sport, category) or (event_id, team_name, name)
       const tripKey = `${eventId}_${cleanEmpId}_${cleanSport.toLowerCase()}_${cleanCategory.toLowerCase()}`;
-      if (existingPlayerTriplets.has(tripKey)) {
+      if (
+        existingPlayerTriplets.has(tripKey) ||
+        (cleanTeamName && eventTeamPlayerToExisting.has(`${eventId}_${cleanTeamName.toLowerCase()}_${cleanName.toLowerCase()}`))
+      ) {
         // Already registered for this exact event, sport, and category; do not create duplicate
         continue;
       }
       existingPlayerTriplets.add(tripKey);
+      if (cleanTeamName) {
+        eventTeamPlayerToExisting.set(`${eventId}_${cleanTeamName.toLowerCase()}_${cleanName.toLowerCase()}`, { employee_id: cleanEmpId, player_code: playerCode });
+      }
 
       const metadata: Record<string, any> = {
         player_code: playerCode,
