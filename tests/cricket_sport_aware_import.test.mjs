@@ -163,6 +163,7 @@ test('SPORT-AWARE IMPORT & CRICKET TEAM MATCH OPERATIONS TEST SUITE', async (t) 
     const cricketRows = [
       {
         'Team Name': 'Royal Challengers',
+        'Captain Name': 'Virat K',
         'Player Name': 'Virat K',
         'Employee ID': `CRK_1_${testSuffix}`,
         'Email': `vk_${testSuffix}@example.com`,
@@ -170,6 +171,7 @@ test('SPORT-AWARE IMPORT & CRICKET TEAM MATCH OPERATIONS TEST SUITE', async (t) 
       },
       {
         'Team Name': 'Royal Challengers',
+        'Captain Name': 'Virat K',
         'Player Name': 'Faf D',
         'Employee ID': `CRK_2_${testSuffix}`,
         'Email': `fd_${testSuffix}@example.com`,
@@ -177,6 +179,7 @@ test('SPORT-AWARE IMPORT & CRICKET TEAM MATCH OPERATIONS TEST SUITE', async (t) 
       },
       {
         'Team Name': 'Royal Challengers',
+        'Captain Name': 'Virat K',
         'Player Name': 'Glenn M',
         'Employee ID': `CRK_3_${testSuffix}`,
         'Email': `gm_${testSuffix}@example.com`,
@@ -184,6 +187,7 @@ test('SPORT-AWARE IMPORT & CRICKET TEAM MATCH OPERATIONS TEST SUITE', async (t) 
       },
       {
         'Team Name': 'Super Kings',
+        'Captain Name': 'MS Dhoni',
         'Player Name': 'MS Dhoni',
         'Employee ID': `CRK_4_${testSuffix}`,
         'Email': `msd_${testSuffix}@example.com`,
@@ -191,6 +195,7 @@ test('SPORT-AWARE IMPORT & CRICKET TEAM MATCH OPERATIONS TEST SUITE', async (t) 
       },
       {
         'Team Name': 'Super Kings',
+        'Captain Name': 'MS Dhoni',
         'Player Name': 'Ruturaj G',
         'Employee ID': `CRK_5_${testSuffix}`,
         'Email': `rg_${testSuffix}@example.com`,
@@ -198,6 +203,7 @@ test('SPORT-AWARE IMPORT & CRICKET TEAM MATCH OPERATIONS TEST SUITE', async (t) 
       },
       {
         'Team Name': 'Super Kings',
+        'Captain Name': 'MS Dhoni',
         'Player Name': 'Ravindra J',
         'Employee ID': `CRK_6_${testSuffix}`,
         'Email': `rj_${testSuffix}@example.com`,
@@ -221,6 +227,9 @@ test('SPORT-AWARE IMPORT & CRICKET TEAM MATCH OPERATIONS TEST SUITE', async (t) 
     assert.strictEqual(importData.summary.newPlayers, 6);
     assert.strictEqual(importData.summary.teamsDetected, 2, 'Should detect exactly 2 unique teams');
     assert.deepStrictEqual(importData.summary.teamNames?.sort(), ['Royal Challengers', 'Super Kings']);
+    assert.strictEqual(importData.summary.teamCaptains?.['Royal Challengers'], 'Virat K');
+    assert.strictEqual(importData.summary.teamCaptains?.['Super Kings'], 'MS Dhoni');
+    assert.strictEqual(importData.summary.teamsCreatedOrUpdated, 2);
 
     // Check DB records
     const { data: dbPlayers } = await supabase
@@ -241,6 +250,20 @@ test('SPORT-AWARE IMPORT & CRICKET TEAM MATCH OPERATIONS TEST SUITE', async (t) 
       const team = p.team_name || p.push_subscription?._metadata?.team_name;
       assert.ok(['Royal Challengers', 'Super Kings'].includes(team), `Unexpected team name: ${team}`);
 
+      // Verify captain metadata is stored
+      const capName = p.push_subscription?._metadata?.captain_name;
+      if (team === 'Royal Challengers') {
+        assert.strictEqual(capName, 'Virat K');
+        if (p.name === 'Virat K') {
+          assert.strictEqual(p.push_subscription?._metadata?.is_captain, true);
+        }
+      } else if (team === 'Super Kings') {
+        assert.strictEqual(capName, 'MS Dhoni');
+        if (p.name === 'MS Dhoni') {
+          assert.strictEqual(p.push_subscription?._metadata?.is_captain, true);
+        }
+      }
+
       // Verify NO Team Code is generated or used as identity
       assert.strictEqual(p.push_subscription?._metadata?.team_code, undefined, 'Must not generate a Team Code');
     });
@@ -252,7 +275,7 @@ test('SPORT-AWARE IMPORT & CRICKET TEAM MATCH OPERATIONS TEST SUITE', async (t) 
   // =========================================================================
   // TEST 3: CRICKET TEAMS API ENDPOINT (/api/admin/teams)
   // =========================================================================
-  await t.test('3. Querying /api/admin/teams groups roster by Team Name with player details', async () => {
+  await t.test('3. Querying /api/admin/teams groups roster by Team Name with player and captain details', async () => {
     const teamsRes = await fetch(`${baseUrl}/api/admin/teams?eventId=${cricketEventId}`);
     const teamsData = await teamsRes.json();
 
@@ -265,17 +288,29 @@ test('SPORT-AWARE IMPORT & CRICKET TEAM MATCH OPERATIONS TEST SUITE', async (t) 
 
     assert.ok(rc, 'Royal Challengers team must exist');
     assert.strictEqual(rc.playerCount, 3);
+    assert.strictEqual(rc.captainName, 'Virat K');
     assert.ok(csk, 'Super Kings team must exist');
     assert.strictEqual(csk.playerCount, 3);
+    assert.strictEqual(csk.captainName, 'MS Dhoni');
 
     // Each member has playerCode
     rc.players.forEach((m) => {
       assert.match(m.playerCode, /^SO-[2-9A-HJ-NP-Z]{6}$/);
+      if (m.name === 'Virat K') {
+        assert.strictEqual(m.isCaptain, true);
+      }
+    });
+
+    csk.players.forEach((m) => {
+      assert.match(m.playerCode, /^SO-[2-9A-HJ-NP-Z]{6}$/);
+      if (m.name === 'MS Dhoni') {
+        assert.strictEqual(m.isCaptain, true);
+      }
     });
   });
 
   // =========================================================================
-  // TEST 4: CRICKET RE-IMPORT PRESERVES EXISTING PLAYER CODES
+  // TEST 4: CRICKET RE-IMPORT PRESERVES EXISTING PLAYER CODES & UPDATES TEAMS
   // =========================================================================
   await t.test('4. Re-importing Cricket roster preserves existing Player Codes and updates existing count', async () => {
     const { data: beforePlayers } = await supabase
@@ -292,6 +327,7 @@ test('SPORT-AWARE IMPORT & CRICKET TEAM MATCH OPERATIONS TEST SUITE', async (t) 
     const reimportRows = [
       {
         'Team Name': 'Royal Challengers',
+        'Captain Name': 'Virat K',
         'Player Name': 'Virat K',
         'Employee ID': `CRK_1_${testSuffix}`,
         'Email': `vk_${testSuffix}@example.com`,
@@ -299,6 +335,7 @@ test('SPORT-AWARE IMPORT & CRICKET TEAM MATCH OPERATIONS TEST SUITE', async (t) 
       },
       {
         'Team Name': 'Royal Challengers',
+        'Captain Name': 'Virat K',
         'Player Name': 'Faf D',
         'Employee ID': `CRK_2_${testSuffix}`,
         'Email': `fd_${testSuffix}@example.com`,
@@ -306,6 +343,7 @@ test('SPORT-AWARE IMPORT & CRICKET TEAM MATCH OPERATIONS TEST SUITE', async (t) 
       },
       {
         'Team Name': 'Royal Challengers',
+        'Captain Name': 'Virat K',
         'Player Name': 'Glenn M',
         'Employee ID': `CRK_3_${testSuffix}`,
         'Email': `gm_${testSuffix}@example.com`,
@@ -313,6 +351,7 @@ test('SPORT-AWARE IMPORT & CRICKET TEAM MATCH OPERATIONS TEST SUITE', async (t) 
       },
       {
         'Team Name': 'Super Kings',
+        'Captain Name': 'MS Dhoni',
         'Player Name': 'MS Dhoni',
         'Employee ID': `CRK_4_${testSuffix}`,
         'Email': `msd_${testSuffix}@example.com`,
@@ -320,6 +359,7 @@ test('SPORT-AWARE IMPORT & CRICKET TEAM MATCH OPERATIONS TEST SUITE', async (t) 
       },
       {
         'Team Name': 'Super Kings',
+        'Captain Name': 'MS Dhoni',
         'Player Name': 'Ruturaj G',
         'Employee ID': `CRK_5_${testSuffix}`,
         'Email': `rg_${testSuffix}@example.com`,
@@ -327,6 +367,7 @@ test('SPORT-AWARE IMPORT & CRICKET TEAM MATCH OPERATIONS TEST SUITE', async (t) 
       },
       {
         'Team Name': 'Super Kings',
+        'Captain Name': 'MS Dhoni',
         'Player Name': 'Ravindra J',
         'Employee ID': `CRK_6_${testSuffix}`,
         'Email': `rj_${testSuffix}@example.com`,
@@ -334,6 +375,7 @@ test('SPORT-AWARE IMPORT & CRICKET TEAM MATCH OPERATIONS TEST SUITE', async (t) 
       },
       {
         'Team Name': 'Super Kings',
+        'Captain Name': 'MS Dhoni',
         'Player Name': 'Shivam D',
         'Employee ID': `CRK_7_${testSuffix}`,
         'Email': `sd_${testSuffix}@example.com`,
@@ -351,9 +393,10 @@ test('SPORT-AWARE IMPORT & CRICKET TEAM MATCH OPERATIONS TEST SUITE', async (t) 
     });
 
     const reimportData = await reimportRes.json();
-    assert.strictEqual(reimportRes.status, 200);
+    assert.strictEqual(reimportRes.status, 200, `Re-import failed: ${JSON.stringify(reimportData)}`);
     assert.strictEqual(reimportData.summary.existingPlayers, 6, 'Should detect 6 existing players');
     assert.strictEqual(reimportData.summary.newPlayers, 1, 'Should detect 1 new player');
+    assert.strictEqual(reimportData.summary.teamsCreatedOrUpdated, 2, 'Should update existing 2 teams');
 
     // Verify existing player codes did not change
     const { data: afterPlayers } = await supabase
@@ -503,5 +546,134 @@ test('SPORT-AWARE IMPORT & CRICKET TEAM MATCH OPERATIONS TEST SUITE', async (t) 
 
     const presentPlayers = (resetPlayers || []).filter((p) => p.status === 'PRESENT');
     assert.ok(presentPlayers.length >= 7, 'All team players must be reset back to PRESENT');
+  });
+
+  // =========================================================================
+  // TEST 7: CRICKET CAPTAIN & TEAM INTEGRITY VALIDATIONS
+  // =========================================================================
+  await t.test('7. Captain integrity validations: declared captain not in team, Captain = "Yes", and inconsistent captains', async (subT) => {
+    // 7.1 Declared captain not in team roster
+    await subT.test('7.1 Reject import when declared captain does not exist in the team roster', async () => {
+      const invalidRows = [
+        {
+          'Team Name': 'Delhi Capitals',
+          'Captain Name': 'Gautam Gambhir',
+          'Player Name': 'Rishabh Pant',
+          'Employee ID': `DC_1_${testSuffix}`
+        },
+        {
+          'Team Name': 'Delhi Capitals',
+          'Captain Name': 'Gautam Gambhir',
+          'Player Name': 'David Warner',
+          'Employee ID': `DC_2_${testSuffix}`
+        }
+      ];
+
+      const res = await fetch(`${baseUrl}/api/admin/players/import`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          eventId: cricketEventId,
+          records: invalidRows
+        })
+      });
+
+      const data = await res.json();
+      assert.strictEqual(res.status, 400);
+      assert.ok(data.error?.includes('does not exist in the player roster for Team "Delhi Capitals"'));
+    });
+
+    // 7.2 Captain Name is Yes/No/boolean
+    await subT.test('7.2 Reject import when Captain Name is Yes/No instead of actual player name', async () => {
+      const invalidRows = [
+        {
+          'Team Name': 'Kolkata Knight Riders',
+          'Captain Name': 'Yes',
+          'Player Name': 'Shreyas Iyer',
+          'Employee ID': `KKR_1_${testSuffix}`
+        }
+      ];
+
+      const res = await fetch(`${baseUrl}/api/admin/players/import`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          eventId: cricketEventId,
+          records: invalidRows
+        })
+      });
+
+      const data = await res.json();
+      assert.strictEqual(res.status, 400);
+      assert.ok(data.error?.includes('must contain the captain\'s actual player name, not "Yes"'));
+    });
+
+    // 7.3 Inconsistent captain across rows of the same team
+    await subT.test('7.3 Reject import when conflicting captains are declared for the same team', async () => {
+      const invalidRows = [
+        {
+          'Team Name': 'Sunrisers',
+          'Captain Name': 'Pat Cummins',
+          'Player Name': 'Pat Cummins',
+          'Employee ID': `SRH_1_${testSuffix}`
+        },
+        {
+          'Team Name': 'Sunrisers',
+          'Captain Name': 'Aiden Markram',
+          'Player Name': 'Aiden Markram',
+          'Employee ID': `SRH_2_${testSuffix}`
+        }
+      ];
+
+      const res = await fetch(`${baseUrl}/api/admin/players/import`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          eventId: cricketEventId,
+          records: invalidRows
+        })
+      });
+
+      const data = await res.json();
+      assert.strictEqual(res.status, 400);
+      assert.ok(data.error?.includes('Inconsistent Captain for Team "Sunrisers"'));
+    });
+
+    // 7.4 Multi-team membership conflict in same event
+    await subT.test('7.4 Reject import when a player is listed in multiple cricket teams', async () => {
+      const invalidRows = [
+        {
+          'Team Name': 'Team Alpha',
+          'Captain Name': 'Shared Player',
+          'Player Name': 'Shared Player',
+          'Employee ID': `EMP_MULTI_${testSuffix}`
+        },
+        {
+          'Team Name': 'Team Beta',
+          'Captain Name': 'Other Captain',
+          'Player Name': 'Shared Player',
+          'Employee ID': `EMP_MULTI_${testSuffix}`
+        },
+        {
+          'Team Name': 'Team Beta',
+          'Captain Name': 'Other Captain',
+          'Player Name': 'Other Captain',
+          'Employee ID': `EMP_OTHER_${testSuffix}`
+        }
+      ];
+
+      const res = await fetch(`${baseUrl}/api/admin/players/import`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          eventId: cricketEventId,
+          records: invalidRows
+        })
+      });
+
+      const data = await res.json();
+      assert.strictEqual(res.status, 400);
+      assert.ok(data.error?.includes('is assigned to multiple teams: "Team Alpha"'));
+    });
   });
 });

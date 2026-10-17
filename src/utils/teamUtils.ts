@@ -7,10 +7,15 @@ export interface TeamMember {
   name: string;
   contact?: string | null;
   status: string;
+  isCaptain?: boolean;
 }
 
 export interface TeamGroup {
+  teamId?: string;
   teamName: string;
+  captainName?: string | null;
+  captainPlayerId?: string | null;
+  captainPlayerCode?: string | null;
   sport: string;
   category: string;
   playerCount: number;
@@ -66,7 +71,16 @@ export function groupPlayersByTeam(players: any[]): Record<string, any[]> {
  * Converts a list of players into structured TeamGroup objects.
  */
 export function getStructuredTeams(players: any[], filterSport?: string): TeamGroup[] {
-  const teamsMap = new Map<string, { sport: string; category: string; players: TeamMember[] }>();
+  const teamsMap = new Map<
+    string,
+    {
+      sport: string;
+      category: string;
+      captainName?: string | null;
+      captainPlayerId?: string | null;
+      players: TeamMember[];
+    }
+  >();
 
   (players || []).forEach((p) => {
     const tName = extractPlayerTeam(p);
@@ -76,21 +90,36 @@ export function getStructuredTeams(players: any[], filterSport?: string): TeamGr
       return;
     }
 
+    const meta = p.push_subscription?._metadata;
+    const isCap = meta?.is_captain === true;
+
     const member: TeamMember = {
       id: p.id,
       employeeId: p.employee_id,
       playerCode: extractPlayerCode(p) || p.player_code || '-',
       name: p.name,
       contact: p.contact_info,
-      status: p.status
+      status: p.status,
+      isCaptain: isCap
     };
 
     if (!teamsMap.has(tName)) {
       teamsMap.set(tName, {
         sport: p.sport || 'Cricket',
         category: p.category || 'Open Cricket',
+        captainName: meta?.captain_name || (isCap ? p.name : null),
+        captainPlayerId: isCap ? p.id : null,
         players: []
       });
+    } else {
+      const existing = teamsMap.get(tName)!;
+      if (meta?.captain_name && !existing.captainName) {
+        existing.captainName = meta.captain_name;
+      }
+      if (isCap) {
+        existing.captainPlayerId = p.id;
+        if (!existing.captainName) existing.captainName = p.name;
+      }
     }
 
     teamsMap.get(tName)!.players.push(member);
@@ -100,6 +129,8 @@ export function getStructuredTeams(players: any[], filterSport?: string): TeamGr
   teamsMap.forEach((val, teamName) => {
     result.push({
       teamName,
+      captainName: val.captainName || null,
+      captainPlayerId: val.captainPlayerId || null,
       sport: val.sport,
       category: val.category,
       playerCount: val.players.length,

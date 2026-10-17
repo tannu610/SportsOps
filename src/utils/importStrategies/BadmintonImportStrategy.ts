@@ -93,6 +93,8 @@ export class BadmintonImportStrategy implements SportImportStrategy {
         row['employee_id'] ||
         row['Emp ID'] ||
         row['EmpId'] ||
+        row['EmployeeID'] ||
+        row['empId'] ||
         ''
       ).trim();
 
@@ -101,6 +103,7 @@ export class BadmintonImportStrategy implements SportImportStrategy {
         row['Player Name'] ||
         row['name'] ||
         row['PlayerName'] ||
+        row['playerName'] ||
         ''
       ).trim();
 

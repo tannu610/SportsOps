@@ -78,7 +78,7 @@ export async function POST(req: Request) {
     // 4. Validate and parse records using the sport-specific strategy
     const validation = importStrategy.parseAndValidate(records, allPlayers || [], event?.configuration);
 
-    if (validation.validRecords.length === 0 && validation.errors.length > 0) {
+    if (validation.errors.length > 0) {
       return NextResponse.json({
         error: `Validation failed: ${validation.errors[0]?.reason}`,
         details: validation.errors
@@ -184,6 +184,12 @@ export async function POST(req: Request) {
       if (cleanTeamName) {
         metadata.team_name = cleanTeamName;
       }
+      if (r.captainName) {
+        metadata.captain_name = r.captainName;
+      }
+      if (r.isCaptain) {
+        metadata.is_captain = true;
+      }
 
       toInsert.push({
         event_id: eventId,
@@ -244,12 +250,113 @@ export async function POST(req: Request) {
       }
     }
 
+    // 5. For team-based sports (Cricket), manage relational cricket_teams and cricket_team_members
+    if (importStrategy.isTeamBased && validation.teamsDetected.length > 0) {
+      try {
+        const { data: currentEventPlayers } = await supabase
+          .from('players')
+          .select('id, name, employee_id, push_subscription')
+          .eq('event_id', eventId);
+
+        for (const tName of validation.teamsDetected) {
+          const declaredCaptainName = validation.teamCaptains?.[tName] || null;
+
+          // Find captain player in current event
+          let captainPlayerId: string | null = null;
+          if (declaredCaptainName && currentEventPlayers) {
+            const normCap = declaredCaptainName.toLowerCase().replace(/\d+$/, '').replace(/[^a-z0-9]/g, '');
+            const capPlayer = currentEventPlayers.find(
+              (p: any) =>
+                (p.team_name === tName || p.push_subscription?._metadata?.team_name === tName) &&
+                p.name.toLowerCase().replace(/\d+$/, '').replace(/[^a-z0-9]/g, '') === normCap
+            );
+            if (capPlayer) {
+              captainPlayerId = capPlayer.id;
+            }
+          }
+
+          // Match or insert team in cricket_teams
+          const { data: existingTeam } = await supabase
+            .from('cricket_teams')
+            .select('id, name')
+            .eq('event_id', eventId)
+            .eq('name', tName)
+            .maybeSingle();
+
+          let teamId: string | null = existingTeam?.id || null;
+
+          if (teamId) {
+            await supabase
+              .from('cricket_teams')
+              .update({
+                captain_name: declaredCaptainName,
+                captain_player_id: captainPlayerId,
+                updated_at: new Date().toISOString()
+              })
+              .eq('id', teamId);
+          } else {
+            const { data: newTeam } = await supabase
+              .from('cricket_teams')
+              .insert({
+                event_id: eventId,
+                name: tName,
+                category: 'Open Cricket',
+                captain_name: declaredCaptainName,
+                captain_player_id: captainPlayerId
+              })
+              .select('id')
+              .single();
+
+            if (newTeam) {
+              teamId = newTeam.id;
+            }
+          }
+
+          // Link team members in cricket_team_members
+          if (teamId && currentEventPlayers) {
+            const teamPlayers = currentEventPlayers.filter(
+              (p: any) => (p.team_name === tName || p.push_subscription?._metadata?.team_name === tName)
+            );
+
+            for (const tp of teamPlayers) {
+              const isCap = tp.id === captainPlayerId || tp.push_subscription?._metadata?.is_captain === true;
+              const { data: existingMember } = await supabase
+                .from('cricket_team_members')
+                .select('id, is_captain')
+                .eq('team_id', teamId)
+                .eq('player_id', tp.id)
+                .maybeSingle();
+
+              if (!existingMember) {
+                await supabase
+                  .from('cricket_team_members')
+                  .insert({
+                    team_id: teamId,
+                    player_id: tp.id,
+                    is_captain: isCap
+                  });
+              } else if (existingMember.is_captain !== isCap) {
+                await supabase
+                  .from('cricket_team_members')
+                  .update({ is_captain: isCap })
+                  .eq('id', existingMember.id);
+              }
+            }
+          }
+        }
+      } catch (teamRelErr) {
+        console.warn('Relational cricket_teams update skipped:', teamRelErr);
+      }
+    }
+
     return NextResponse.json({
       success: true,
       sport: importStrategy.sportName,
       isTeamBased: importStrategy.isTeamBased,
       teamsDetected: validation.teamsDetected,
       teamPlayerCounts: validation.teamPlayerCounts,
+      teamCaptains: validation.teamCaptains || {},
+      teamsCreatedOrUpdated: validation.teamsDetected.length,
       insertedCount: insertedData.length,
       updatedCount: updatedExisting.length,
       skippedCount: validation.skipped.length,
@@ -259,6 +366,8 @@ export async function POST(req: Request) {
         isTeamBased: importStrategy.isTeamBased,
         teamsDetected: validation.teamsDetected.length,
         teamNames: validation.teamsDetected,
+        teamCaptains: validation.teamCaptains || {},
+        teamsCreatedOrUpdated: validation.teamsDetected.length,
         totalRows: records.length,
         newPlayers: insertedData.length,
         existingPlayers: Math.max(validation.existingPlayersCount, validation.validRecords.length - insertedData.length),
@@ -273,6 +382,8 @@ export async function POST(req: Request) {
         sport: p.sport,
         category: p.category,
         teamName: p.push_subscription?._metadata?.team_name || null,
+        captainName: p.push_subscription?._metadata?.captain_name || null,
+        isCaptain: p.push_subscription?._metadata?.is_captain === true,
         source: 'IMPORT',
         status: p.status
       }))

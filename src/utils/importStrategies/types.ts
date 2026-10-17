@@ -7,6 +7,8 @@ export interface ParsedPlayerRecord {
   gender?: string | null;
   email?: string | null;
   teamName?: string | null;
+  captainName?: string | null;
+  isCaptain?: boolean;
   rawRowNumber?: number;
 }
 
@@ -25,6 +27,8 @@ export interface ImportValidationResult {
   skipped: ImportError[];
   teamsDetected: string[];
   teamPlayerCounts: Record<string, number>;
+  teamCaptains?: Record<string, string>;
+  teamsCreatedOrUpdated?: number;
   newPlayersCount: number;
   existingPlayersCount: number;
 }

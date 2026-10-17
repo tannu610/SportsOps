@@ -120,16 +120,17 @@ export async function POST(req: Request) {
         if (
           p.check_in_time ||
           p.previous_status === 'PRESENT' ||
-          p.previous_status === 'AVAILABLE' ||
-          p.previous_status === 'CALLED' ||
-          p.status === 'PLAYING'
+          p.previous_status === 'AVAILABLE'
         ) {
           return 'PRESENT';
         }
         if (p.previous_status && ['REGISTERED', 'ABSENT'].includes(p.previous_status)) {
           return p.previous_status;
         }
-        return 'PRESENT';
+        if (p.status === 'REGISTERED' || p.status === 'ABSENT') {
+          return p.status;
+        }
+        return 'REGISTERED';
       };
 
       const losers = winningTeam === 'team1' ? team2Pids : team1Pids;

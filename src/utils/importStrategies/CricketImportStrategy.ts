@@ -4,7 +4,17 @@ import {
   ParsedPlayerRecord,
   ImportError
 } from './types';
-import { extractPlayerCode } from '../playerCode';
+
+/**
+ * Normalizes a name string for flexible matching across spacing/casing/suffixes.
+ */
+function normalizeName(name: string): string {
+  if (!name) return '';
+  return String(name)
+    .toLowerCase()
+    .replace(/\d+$/, '') // remove trailing numeric suffixes like "Sharma2"
+    .replace(/[^a-z0-9]/g, ''); // remove spaces, punctuation
+}
 
 export class CricketImportStrategy implements SportImportStrategy {
   readonly sportName = 'Cricket';
@@ -12,19 +22,21 @@ export class CricketImportStrategy implements SportImportStrategy {
   readonly isTeamBased = true;
   readonly expectedColumns = [
     'Team Name',
+    'Captain Name',
     'Player Name',
     'Employee ID',
     'Email',
     'Mobile'
   ];
   readonly expectedColumnsDescription =
-    'Team Name, Player Name, Employee ID (optional), Email (optional), Mobile (optional)';
+    'Team Name, Captain Name, Player Name, Employee ID (optional), Email (optional), Mobile (optional)';
   readonly templateFilename = 'Cricket_Team_Roster_Template.xlsx';
 
   getTemplateData(): Record<string, any>[] {
     return [
       {
         'Team Name': 'Team Alpha',
+        'Captain Name': 'Virat Kohli',
         'Player Name': 'Virat Kohli',
         'Employee ID': 'EMP101',
         'Email': 'virat.k@company.com',
@@ -32,6 +44,7 @@ export class CricketImportStrategy implements SportImportStrategy {
       },
       {
         'Team Name': 'Team Alpha',
+        'Captain Name': 'Virat Kohli',
         'Player Name': 'Rohit Sharma',
         'Employee ID': 'EMP102',
         'Email': 'rohit.s@company.com',
@@ -39,6 +52,7 @@ export class CricketImportStrategy implements SportImportStrategy {
       },
       {
         'Team Name': 'Team Alpha',
+        'Captain Name': 'Virat Kohli',
         'Player Name': 'Jasprit Bumrah',
         'Employee ID': 'EMP103',
         'Email': 'jasprit.b@company.com',
@@ -46,6 +60,7 @@ export class CricketImportStrategy implements SportImportStrategy {
       },
       {
         'Team Name': 'Team Beta',
+        'Captain Name': 'Hardik Pandya',
         'Player Name': 'Hardik Pandya',
         'Employee ID': 'EMP104',
         'Email': 'hardik.p@company.com',
@@ -53,6 +68,7 @@ export class CricketImportStrategy implements SportImportStrategy {
       },
       {
         'Team Name': 'Team Beta',
+        'Captain Name': 'Hardik Pandya',
         'Player Name': 'KL Rahul',
         'Employee ID': 'EMP105',
         'Email': 'kl.r@company.com',
@@ -60,6 +76,7 @@ export class CricketImportStrategy implements SportImportStrategy {
       },
       {
         'Team Name': 'Team Beta',
+        'Captain Name': 'Hardik Pandya',
         'Player Name': 'Ravindra Jadeja',
         'Employee ID': 'EMP106',
         'Email': 'ravindra.j@company.com',
@@ -93,9 +110,11 @@ export class CricketImportStrategy implements SportImportStrategy {
       }
     });
 
-    // In-batch duplicate tracking
+    // In-batch tracking
     const batchSeenEmpIds = new Map<string, { teamName: string; rowNum: number }>();
     const batchSeenTeamPlayers = new Map<string, { rowNum: number }>();
+    const teamToDeclaredCaptain = new Map<string, { captainName: string; rowNum: number; originalTeamName: string }>();
+    const teamRostersMap = new Map<string, Array<{ name: string; rowNum: number; empId: string }>>();
     const teamsSet = new Set<string>();
     const teamPlayerCounts: Record<string, number> = {};
 
@@ -128,6 +147,16 @@ export class CricketImportStrategy implements SportImportStrategy {
         row['player_name'] ||
         row['name'] ||
         row['playerName'] ||
+        ''
+      ).trim();
+
+      const rawCaptainName = String(
+        row['Captain Name'] ||
+        row['Team Captain'] ||
+        row['Captain'] ||
+        row['captain_name'] ||
+        row['captain'] ||
+        row['captainName'] ||
         ''
       ).trim();
 
@@ -167,7 +196,7 @@ export class CricketImportStrategy implements SportImportStrategy {
       ).trim();
 
       // Check for completely empty row
-      if (!rawTeamName && !rawPlayerName && !rawEmpId) {
+      if (!rawTeamName && !rawPlayerName && !rawCaptainName && !rawEmpId) {
         skipped.push({ rowNumber: rowNum, reason: 'Empty row' });
         return;
       }
@@ -192,16 +221,57 @@ export class CricketImportStrategy implements SportImportStrategy {
         return;
       }
 
-      let cleanEmpUpper: string;
-      const teamPlayerKey = `${rawTeamName.toLowerCase()}_${rawPlayerName.toLowerCase()}`;
+      // 3. Validate Captain Name
+      if (!rawCaptainName) {
+        errors.push({
+          rowNumber: rowNum,
+          reason: `Missing Captain Name for Team: "${rawTeamName}" (Player: "${rawPlayerName}"). Every player in the team must reference the declared Captain Name.`,
+          rowData: row
+        });
+        return;
+      }
 
-      // 3. Handle Employee ID and Duplicates
+      // Ensure Captain Name is an actual player name, not Yes/No or boolean
+      const lowerCap = rawCaptainName.toLowerCase();
+      if (['yes', 'no', 'y', 'n', 'true', 'false'].includes(lowerCap)) {
+        errors.push({
+          rowNumber: rowNum,
+          reason: `Captain Name for Team "${rawTeamName}" must contain the captain's actual player name, not "${rawCaptainName}".`,
+          rowData: row
+        });
+        return;
+      }
+
+      // 4. Validate Captain Consistency within Team
+      const teamKey = rawTeamName.toLowerCase();
+      if (!teamToDeclaredCaptain.has(teamKey)) {
+        teamToDeclaredCaptain.set(teamKey, {
+          captainName: rawCaptainName,
+          rowNum,
+          originalTeamName: rawTeamName
+        });
+      } else {
+        const prev = teamToDeclaredCaptain.get(teamKey)!;
+        if (normalizeName(prev.captainName) !== normalizeName(rawCaptainName)) {
+          errors.push({
+            rowNumber: rowNum,
+            reason: `Inconsistent Captain for Team "${rawTeamName}": previously declared as "${prev.captainName}" on Row ${prev.rowNum}, but Row ${rowNum} specifies "${rawCaptainName}". Every player in the team must reference the same Captain Name.`,
+            rowData: row
+          });
+          return;
+        }
+      }
+
+      let cleanEmpUpper: string;
+      const teamPlayerKey = `${teamKey}_${rawPlayerName.toLowerCase()}`;
+
+      // 5. Handle Employee ID and Duplicates
       if (rawEmpId) {
         cleanEmpUpper = rawEmpId.toUpperCase();
 
         if (batchSeenEmpIds.has(cleanEmpUpper)) {
           const prev = batchSeenEmpIds.get(cleanEmpUpper)!;
-          if (prev.teamName.toLowerCase() === rawTeamName.toLowerCase()) {
+          if (prev.teamName.toLowerCase() === teamKey) {
             errors.push({
               rowNumber: rowNum,
               reason: `Duplicate Player (EMP ID: ${cleanEmpUpper}) listed multiple times in Team "${rawTeamName}" (First seen on Row ${prev.rowNum})`,
@@ -210,7 +280,7 @@ export class CricketImportStrategy implements SportImportStrategy {
           } else {
             errors.push({
               rowNumber: rowNum,
-              reason: `Conflict: Player (EMP ID: ${cleanEmpUpper}) assigned to multiple teams: "${prev.teamName}" (Row ${prev.rowNum}) and "${rawTeamName}" (Row ${rowNum})`,
+              reason: `Conflict: Player "${rawPlayerName}" (EMP ID: ${cleanEmpUpper}) is assigned to multiple teams: "${prev.teamName}" (Row ${prev.rowNum}) and "${rawTeamName}" (Row ${rowNum}). A player cannot belong to multiple cricket teams in the same event.`,
               rowData: row
             });
           }
@@ -244,6 +314,16 @@ export class CricketImportStrategy implements SportImportStrategy {
 
       batchSeenTeamPlayers.set(teamPlayerKey, { rowNum });
 
+      // Track player in team roster for post-loop captain existence validation
+      if (!teamRostersMap.has(teamKey)) {
+        teamRostersMap.set(teamKey, []);
+      }
+      teamRostersMap.get(teamKey)!.push({
+        name: rawPlayerName,
+        rowNum,
+        empId: cleanEmpUpper
+      });
+
       // Check if player exists in system (for count)
       const existsInDb = existingEmpMap.has(cleanEmpUpper) || existingTeamPlayersMap.has(teamPlayerKey);
       if (existsInDb) {
@@ -262,13 +342,42 @@ export class CricketImportStrategy implements SportImportStrategy {
         sport: this.sportName,
         category: rawCategory || defaultCategory,
         teamName: rawTeamName,
+        captainName: rawCaptainName,
         email: rawEmail || null,
         contact: rawMobile || null,
         rawRowNumber: rowNum
       });
     });
 
+    // 6. Validate that declared captain exists as a player in that team
+    teamToDeclaredCaptain.forEach((info, teamKey) => {
+      const roster = teamRostersMap.get(teamKey) || [];
+      const normCaptain = normalizeName(info.captainName);
+      const captainPlayer = roster.find((p) => normalizeName(p.name) === normCaptain);
+
+      if (!captainPlayer) {
+        errors.push({
+          rowNumber: info.rowNum,
+          reason: `Declared Captain "${info.captainName}" does not exist in the player roster for Team "${info.originalTeamName}". The captain must be a registered player in that team.`
+        });
+      }
+    });
+
+    // 7. Update isCaptain flag on validRecords
+    validRecords.forEach((r) => {
+      const teamKey = (r.teamName || '').toLowerCase();
+      const capInfo = teamToDeclaredCaptain.get(teamKey);
+      if (capInfo) {
+        r.captainName = capInfo.captainName;
+        r.isCaptain = normalizeName(r.name) === normalizeName(capInfo.captainName);
+      }
+    });
+
     const teamsDetected = Array.from(teamsSet);
+    const teamCaptains: Record<string, string> = {};
+    teamToDeclaredCaptain.forEach((val) => {
+      teamCaptains[val.originalTeamName] = val.captainName;
+    });
 
     return {
       sport: this.sportName,
@@ -279,6 +388,8 @@ export class CricketImportStrategy implements SportImportStrategy {
       skipped,
       teamsDetected,
       teamPlayerCounts,
+      teamCaptains,
+      teamsCreatedOrUpdated: teamsDetected.length,
       newPlayersCount,
       existingPlayersCount
     };

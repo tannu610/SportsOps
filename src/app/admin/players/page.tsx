@@ -17,6 +17,8 @@ type PlayerRecord = {
   sport: string;
   category: string;
   teamName?: string | null;
+  captainName?: string | null;
+  isCaptain?: boolean;
   round: string;
   status: string;
   checkIn: string; // ISO string or "-"
@@ -31,6 +33,8 @@ type ImportSummaryState = {
   existingPlayers: number;
   teamsDetected: string[];
   teamPlayerCounts: Record<string, number>;
+  teamCaptains?: Record<string, string>;
+  teamsCreatedOrUpdated?: number;
   errors: Array<{ rowNumber: number; reason: string }>;
   skipped: Array<{ rowNumber: number; reason: string }>;
   parsedData: any[];
@@ -148,6 +152,9 @@ export default function PlayersPage() {
           const gender = p.gender || p.push_subscription?._metadata?.gender || "-";
           const source = extractPlayerSource(p);
           const teamName = extractPlayerTeam(p);
+          const meta = p.push_subscription?._metadata;
+          const captainName = meta?.captain_name || null;
+          const isCaptain = meta?.is_captain === true;
 
           return {
             id: p.employee_id,
@@ -159,6 +166,8 @@ export default function PlayersPage() {
             sport: p.sport,
             category: p.category || 'NA',
             teamName,
+            captainName,
+            isCaptain,
             round: p.current_round ? `Round ${p.current_round}` : 'Round 1',
             status: p.status,
             checkIn: p.check_in_time || "-"
@@ -236,6 +245,8 @@ export default function PlayersPage() {
           existingPlayers: validation.existingPlayersCount,
           teamsDetected: validation.teamsDetected,
           teamPlayerCounts: validation.teamPlayerCounts,
+          teamCaptains: validation.teamCaptains,
+          teamsCreatedOrUpdated: validation.teamsCreatedOrUpdated ?? validation.teamsDetected.length,
           errors: validation.errors,
           skipped: validation.skipped,
           parsedData: validation.validRecords
@@ -408,7 +419,7 @@ export default function PlayersPage() {
             className="flex-1 sm:flex-none flex items-center justify-center px-4 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700 transition-colors shadow-sm"
           >
             <Upload className="w-4 h-4 mr-2" />
-            Import {activeStrategy.sportName} Roster
+            {activeStrategy.sportName === 'Cricket' ? 'Import Cricket Roster' : 'Import Players'}
           </button>
         </div>
       </div>
@@ -427,7 +438,7 @@ export default function PlayersPage() {
                     </span>
                   </div>
                   <h3 className="font-bold text-lg text-blue-950 dark:text-blue-100 mt-1">
-                    Upload {activeStrategy.displayName}
+                    {activeStrategy.sportName === 'Cricket' ? 'Upload Cricket Roster' : 'Upload Badminton Player List'}
                   </h3>
                   <p className="text-xs text-blue-700 dark:text-blue-300 mt-0.5 font-medium">
                     Expected columns: <span className="font-mono font-bold text-blue-900 dark:text-blue-200">{activeStrategy.expectedColumnsDescription}</span>
@@ -487,12 +498,17 @@ export default function PlayersPage() {
                       {importSummary.teamsDetected.map((teamName) => (
                         <div
                           key={teamName}
-                          className="px-3 py-1 bg-blue-50 dark:bg-blue-950/60 border border-blue-200 dark:border-blue-800 rounded-lg text-xs font-black text-blue-900 dark:text-blue-200 flex items-center gap-1.5"
+                          className="px-3 py-1.5 bg-blue-50 dark:bg-blue-950/60 border border-blue-200 dark:border-blue-800 rounded-lg text-xs font-black text-blue-900 dark:text-blue-200 flex flex-wrap items-center gap-1.5"
                         >
                           <span>{teamName}</span>
                           <span className="bg-blue-200 dark:bg-blue-800 text-blue-900 dark:text-blue-100 px-1.5 py-0.2 rounded text-[10px]">
                             {importSummary.teamPlayerCounts[teamName] || 0} players
                           </span>
+                          {importSummary.teamCaptains?.[teamName] && (
+                            <span className="bg-amber-100 dark:bg-amber-950/80 text-amber-800 dark:text-amber-300 border border-amber-300/60 dark:border-amber-700/60 px-1.5 py-0.2 rounded text-[10px] font-bold">
+                              Captain: {importSummary.teamCaptains[teamName]}
+                            </span>
+                          )}
                         </div>
                       ))}
                     </div>
@@ -503,7 +519,13 @@ export default function PlayersPage() {
               )}
 
               {/* Statistics Grid */}
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs">
+              <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2.5 text-xs">
+                {importSummary.isTeamBased && (
+                  <div className="p-3 bg-white dark:bg-zinc-900 rounded-xl border border-gray-200 dark:border-zinc-800">
+                    <span className="text-[10px] font-bold uppercase tracking-wider text-gray-400 block">Teams Detected</span>
+                    <span className="text-xl font-black text-gray-900 dark:text-white mt-0.5 block">{importSummary.teamsDetected.length}</span>
+                  </div>
+                )}
                 <div className="p-3 bg-white dark:bg-zinc-900 rounded-xl border border-gray-200 dark:border-zinc-800">
                   <span className="text-[10px] font-bold uppercase tracking-wider text-gray-400 block">Total Players</span>
                   <span className="text-xl font-black text-gray-900 dark:text-white mt-0.5 block">{importSummary.success}</span>
@@ -518,6 +540,13 @@ export default function PlayersPage() {
                   <span className="text-xl font-black text-indigo-700 dark:text-indigo-300 mt-0.5 block">{importSummary.existingPlayers}</span>
                   <span className="text-[10px] text-indigo-600 font-medium block">Retain Player Codes</span>
                 </div>
+                {importSummary.isTeamBased && (
+                  <div className="p-3 bg-purple-50 dark:bg-purple-950/40 rounded-xl border border-purple-200 dark:border-purple-800">
+                    <span className="text-[10px] font-bold uppercase tracking-wider text-purple-700 dark:text-purple-300 block">Teams Created / Updated</span>
+                    <span className="text-xl font-black text-purple-700 dark:text-purple-300 mt-0.5 block">{importSummary.teamsCreatedOrUpdated ?? importSummary.teamsDetected.length}</span>
+                    <span className="text-[10px] text-purple-600 font-medium block">Matched by Event + Name</span>
+                  </div>
+                )}
                 <div className="p-3 bg-amber-50 dark:bg-amber-950/40 rounded-xl border border-amber-200 dark:border-amber-800">
                   <span className="text-[10px] font-bold uppercase tracking-wider text-amber-700 dark:text-amber-300 block">Skipped / Invalid</span>
                   <span className="text-xl font-black text-amber-700 dark:text-amber-300 mt-0.5 block">
@@ -724,7 +753,7 @@ export default function PlayersPage() {
                   <th className="px-4 py-3 font-medium">EMP ID</th>
                   <th className="px-4 py-3 font-medium">Player Code</th>
                   <th className="px-4 py-3 font-medium">Name</th>
-                  {hasTeamsInSystem && <th className="px-4 py-3 font-medium">Team</th>}
+                  {hasTeamsInSystem && <th className="px-4 py-3 font-medium">Team & Captain</th>}
                   <th className="px-4 py-3 font-medium">Gender</th>
                   <th className="px-4 py-3 font-medium">Sport / Category</th>
                   <th className="px-4 py-3 font-medium">Source</th>
@@ -737,13 +766,34 @@ export default function PlayersPage() {
                   <tr key={player.dbId || player.id} className="hover:bg-gray-50 dark:hover:bg-zinc-900/50">
                     <td className="px-4 py-3 font-medium font-mono text-xs">{player.id}</td>
                     <td className="px-4 py-3 font-bold font-mono text-xs text-blue-600 dark:text-blue-400">{player.playerCode}</td>
-                    <td className="px-4 py-3 font-medium text-gray-900 dark:text-gray-100">{player.name}</td>
+                    <td className="px-4 py-3 font-medium text-gray-900 dark:text-gray-100">
+                      <div className="flex items-center gap-1.5">
+                        <span>{player.name}</span>
+                        {player.isCaptain && (
+                          <span className="px-1.5 py-0.5 text-[9px] font-black uppercase tracking-wider rounded bg-amber-500 text-white shadow-xs" title="Team Captain">
+                            Captain
+                          </span>
+                        )}
+                      </div>
+                    </td>
                     {hasTeamsInSystem && (
                       <td className="px-4 py-3">
                         {player.teamName ? (
-                          <span className="px-2.5 py-0.5 rounded-lg text-xs font-black bg-indigo-50 dark:bg-indigo-950/50 text-indigo-700 dark:text-indigo-300 border border-indigo-200 dark:border-indigo-800">
-                            {player.teamName}
-                          </span>
+                          <div className="flex flex-col gap-0.5 items-start">
+                            <span className="px-2.5 py-0.5 rounded-lg text-xs font-black bg-indigo-50 dark:bg-indigo-950/50 text-indigo-700 dark:text-indigo-300 border border-indigo-200 dark:border-indigo-800 inline-flex items-center gap-1.5">
+                              <span>{player.teamName}</span>
+                              {player.isCaptain && (
+                                <span className="bg-amber-100 text-amber-800 dark:bg-amber-900/60 dark:text-amber-200 px-1 py-0.2 rounded text-[9px] font-bold">
+                                  C
+                                </span>
+                              )}
+                            </span>
+                            {!player.isCaptain && player.captainName && (
+                              <span className="text-[10px] text-gray-400 dark:text-gray-500 font-medium pl-0.5">
+                                Captain: {player.captainName}
+                              </span>
+                            )}
+                          </div>
                         ) : (
                           <span className="text-gray-400 text-xs">-</span>
                         )}
