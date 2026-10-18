@@ -146,6 +146,18 @@ CREATE TABLE IF NOT EXISTS notifications (
   read BOOLEAN DEFAULT FALSE
 );
 
+-- 2.5 Match Player Responses Table (Two-Way Availability Responses)
+CREATE TABLE IF NOT EXISTS match_player_responses (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  match_id UUID NOT NULL REFERENCES matches(id) ON DELETE CASCADE,
+  player_id UUID NOT NULL REFERENCES players(id) ON DELETE CASCADE,
+  response TEXT NOT NULL CHECK (response IN ('COMING', 'NOT_COMING')),
+  responded_at TIMESTAMPTZ DEFAULT timezone('utc'::text, now()),
+  created_at TIMESTAMPTZ DEFAULT timezone('utc'::text, now()),
+  updated_at TIMESTAMPTZ DEFAULT timezone('utc'::text, now()),
+  CONSTRAINT uq_match_player_response UNIQUE (match_id, player_id)
+);
+
 -- ==============================================================================
 -- 3. INDEXES FOR PERFORMANCE
 -- ==============================================================================

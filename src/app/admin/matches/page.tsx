@@ -181,6 +181,42 @@ export default function PlayAreaManagementPage() {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [finishingMatch, setFinishingMatch] = useState<{ match: Match; isWalkover: boolean } | null>(null);
   const [managingMatch, setManagingMatch] = useState<Match | null>(null);
+  const [viewingResponsesMatch, setViewingResponsesMatch] = useState<Match | null>(null);
+  const [breakdownLoading, setBreakdownLoading] = useState(false);
+  const [matchBreakdown, setMatchBreakdown] = useState<any>(null);
+
+  // Fetch match player availability responses breakdown when modal opens
+  useEffect(() => {
+    if (!viewingResponsesMatch) {
+      setMatchBreakdown(null);
+      return;
+    }
+
+    let active = true;
+    async function fetchBreakdown() {
+      setBreakdownLoading(true);
+      try {
+        const res = await fetch(`/api/admin/matches/responses?matchId=${viewingResponsesMatch?.id}`);
+        const data = await res.json();
+        if (active) {
+          if (res.ok) {
+            setMatchBreakdown(data);
+          } else {
+            console.error("Error loading responses breakdown:", data.error);
+          }
+        }
+      } catch (err) {
+        console.error("Failed to fetch responses breakdown:", err);
+      } finally {
+        if (active) setBreakdownLoading(false);
+      }
+    }
+
+    fetchBreakdown();
+    return () => {
+      active = false;
+    };
+  }, [viewingResponsesMatch]);
 
   // Form State for Create Match
   const [formSport, setFormSport] = useState("Badminton");
@@ -799,8 +835,10 @@ export default function PlayAreaManagementPage() {
         scheduledMatch.team2_p2
       ].filter(Boolean) as Player[];
 
+      const isTeamMatch = Boolean(scheduledMatch.sport?.toLowerCase().includes("cricket"));
       const hasUnavailable =
-        scheduledMatch.status === "PLAYER_UNAVAILABLE" || matchPlayers.some((p) => p.status === "UNAVAILABLE");
+        !isTeamMatch &&
+        (scheduledMatch.status === "PLAYER_UNAVAILABLE" || matchPlayers.some((p) => p.status === "UNAVAILABLE"));
 
       return {
         courtName,
@@ -1095,6 +1133,24 @@ export default function PlayAreaManagementPage() {
                     {(() => {
                       const { isTeam, team1Name, team2Name } = getMatchTeamNames(match);
                       if (isTeam) {
+                        let scoreObj: any = null;
+                        if (typeof match.score === "string") {
+                          try {
+                            scoreObj = JSON.parse(match.score);
+                          } catch {}
+                        } else if (typeof match.score === "object" && match.score !== null) {
+                          scoreObj = match.score;
+                        }
+                        const totalTeam1 = scoreObj?.team1_player_ids?.length || 11;
+                        const totalTeam2 = scoreObj?.team2_player_ids?.length || 11;
+                        const totalPlayers = totalTeam1 + totalTeam2;
+                        const playerResponses: Record<string, { response: string; responded_at?: string }> =
+                          scoreObj?.player_responses || {};
+                        const responsesList = Object.values(playerResponses);
+                        const comingCount = responsesList.filter((r) => r.response === "COMING").length;
+                        const notComingCount = responsesList.filter((r) => r.response === "NOT_COMING").length;
+                        const pendingCount = Math.max(0, totalPlayers - (comingCount + notComingCount));
+
                         return (
                           <div className="space-y-3 bg-gray-50/70 dark:bg-zinc-800/40 p-4 rounded-2xl">
                             {/* Team 1 */}
@@ -1127,6 +1183,39 @@ export default function PlayAreaManagementPage() {
                               </div>
                               <div className="text-sm font-black text-gray-900 dark:text-white truncate">
                                 {team2Name}
+                              </div>
+                            </div>
+
+                            {/* Two-Way Player Response Summary Badge */}
+                            <div className="pt-2 border-t border-gray-200/60 dark:border-zinc-700/60 space-y-2">
+                              <div className="flex items-center justify-between">
+                                <span className="text-[10px] font-black uppercase tracking-wider text-gray-500 dark:text-zinc-400">
+                                  Player Availability ({comingCount + notComingCount}/{totalPlayers})
+                                </span>
+                                <button
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    setViewingResponsesMatch(match);
+                                  }}
+                                  className="text-[10px] font-black text-indigo-600 dark:text-indigo-400 hover:underline flex items-center gap-1"
+                                >
+                                  <Users className="w-3 h-3" /> Breakdown
+                                </button>
+                              </div>
+                              <div className="grid grid-cols-3 gap-1.5 text-center">
+                                <div className="bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800/60 py-1 px-1.5 rounded-lg">
+                                  <div className="text-[9px] uppercase font-bold text-emerald-600 dark:text-emerald-400">Coming</div>
+                                  <div className="text-xs font-black">{comingCount}</div>
+                                </div>
+                                <div className="bg-rose-50 dark:bg-rose-950/40 text-rose-700 dark:text-rose-300 border border-rose-200 dark:border-rose-800/60 py-1 px-1.5 rounded-lg">
+                                  <div className="text-[9px] uppercase font-bold text-rose-600 dark:text-rose-400 truncate">Can&apos;t Make It</div>
+                                  <div className="text-xs font-black">{notComingCount}</div>
+                                </div>
+                                <div className="bg-slate-100 dark:bg-zinc-700/50 text-slate-700 dark:text-zinc-300 border border-slate-200 dark:border-zinc-600/60 py-1 px-1.5 rounded-lg">
+                                  <div className="text-[9px] uppercase font-bold text-slate-500 dark:text-zinc-400 truncate">No Response</div>
+                                  <div className="text-xs font-black">{pendingCount}</div>
+                                </div>
                               </div>
                             </div>
                           </div>
@@ -1273,7 +1362,24 @@ export default function PlayAreaManagementPage() {
 
                     {/* Matchup */}
                     {(() => {
-                      const { team1Name, team2Name } = getMatchTeamNames(match);
+                      const { isTeam, team1Name, team2Name } = getMatchTeamNames(match);
+                      let scoreObj: any = null;
+                      if (typeof match.score === "string") {
+                        try {
+                          scoreObj = JSON.parse(match.score);
+                        } catch {}
+                      } else if (typeof match.score === "object" && match.score !== null) {
+                        scoreObj = match.score;
+                      }
+                      const totalTeam1 = scoreObj?.team1_player_ids?.length || 11;
+                      const totalTeam2 = scoreObj?.team2_player_ids?.length || 11;
+                      const totalPlayers = totalTeam1 + totalTeam2;
+                      const playerResponses: Record<string, { response: string; responded_at?: string }> =
+                        scoreObj?.player_responses || {};
+                      const responsesList = Object.values(playerResponses);
+                      const comingCount = responsesList.filter((r) => r.response === "COMING").length;
+                      const notComingCount = responsesList.filter((r) => r.response === "NOT_COMING").length;
+
                       return (
                         <div className="bg-gradient-to-br from-indigo-50 to-purple-50 dark:from-zinc-800 dark:to-zinc-800/60 p-4 rounded-2xl space-y-3">
                           <div className="flex items-center justify-between text-sm font-black text-blue-900 dark:text-blue-300">
@@ -1285,6 +1391,24 @@ export default function PlayAreaManagementPage() {
                             <span className="truncate">{team2Name}</span>
                             <span className="text-[10px] font-bold uppercase tracking-wider bg-rose-100 text-rose-800 px-2 py-0.5 rounded">Team 2</span>
                           </div>
+
+                          {isTeam && (
+                            <div className="pt-2 border-t border-gray-200/60 dark:border-zinc-700/60 flex items-center justify-between text-xs">
+                              <span className="text-[10px] font-black uppercase text-gray-500">
+                                {comingCount} Coming • {notComingCount} Not Coming
+                              </span>
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setViewingResponsesMatch(match);
+                                }}
+                                className="text-[10px] font-black text-indigo-600 dark:text-indigo-400 hover:underline flex items-center gap-1"
+                              >
+                                <Users className="w-3 h-3" /> Breakdown
+                              </button>
+                            </div>
+                          )}
                         </div>
                       );
                     })()}
@@ -1751,6 +1875,215 @@ export default function PlayAreaManagementPage() {
             >
               Cancel
             </button>
+          </div>
+        </div>
+      )}
+
+      {/* 8. PLAYER AVAILABILITY BREAKDOWN MODAL */}
+      {viewingResponsesMatch && (
+        <div className="fixed inset-0 bg-indigo-950/50 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+          <div className="bg-white dark:bg-zinc-900 rounded-[2.5rem] p-6 sm:p-8 w-full max-w-4xl shadow-2xl relative border border-gray-100 dark:border-zinc-800 max-h-[90vh] flex flex-col">
+            <button
+              type="button"
+              onClick={() => setViewingResponsesMatch(null)}
+              className="absolute top-6 right-6 text-gray-400 hover:text-gray-900 dark:hover:text-white p-2 rounded-full hover:bg-gray-100 dark:hover:bg-zinc-800 transition-colors"
+            >
+              <X className="w-6 h-6" />
+            </button>
+
+            {/* Modal Header */}
+            <div className="pb-4 border-b border-gray-100 dark:border-zinc-800 pr-10">
+              <div className="text-xs font-black uppercase tracking-wider text-indigo-600 dark:text-indigo-400 mb-1">
+                {viewingResponsesMatch.sport} • {viewingResponsesMatch.category} • {viewingResponsesMatch.playing_area}
+              </div>
+              <h2 className="text-xl sm:text-2xl font-black text-gray-900 dark:text-white flex items-center gap-2">
+                <Users className="w-6 h-6 text-indigo-600" />
+                Player Availability Responses
+              </h2>
+              <div className="flex flex-wrap items-center gap-4 mt-2 text-xs font-bold text-gray-500">
+                <span className="flex items-center gap-1">
+                  <Clock className="w-3.5 h-3.5" /> Scheduled: {format12Hour(viewingResponsesMatch.scheduled_time)}
+                </span>
+                {viewingResponsesMatch.match_code && (
+                  <span className="font-mono bg-gray-100 dark:bg-zinc-800 px-2 py-0.5 rounded text-gray-700 dark:text-gray-300">
+                    Code: {viewingResponsesMatch.match_code}
+                  </span>
+                )}
+              </div>
+            </div>
+
+            {/* Modal Body with Scrollable Teams Breakdown */}
+            <div className="flex-1 overflow-y-auto py-4 space-y-6">
+              {breakdownLoading ? (
+                <div className="py-16 text-center text-gray-400 font-bold flex flex-col items-center justify-center gap-2">
+                  <Activity className="w-6 h-6 animate-spin text-indigo-600" />
+                  Loading player responses...
+                </div>
+              ) : !matchBreakdown ? (
+                <div className="py-12 text-center text-gray-400 font-bold">
+                  No response data available.
+                </div>
+              ) : (
+                <>
+                  {/* Summary Counts Bar */}
+                  <div className="grid grid-cols-4 gap-3">
+                    <div className="bg-slate-50 dark:bg-zinc-800 p-3 rounded-2xl border border-slate-200 dark:border-zinc-700 text-center">
+                      <div className="text-[10px] font-bold uppercase text-gray-400">Total Roster</div>
+                      <div className="text-xl font-black text-gray-900 dark:text-white">
+                        {matchBreakdown.summary?.totalPlayers || 0}
+                      </div>
+                    </div>
+                    <div className="bg-emerald-50 dark:bg-emerald-950/40 p-3 rounded-2xl border border-emerald-200 dark:border-emerald-800 text-center">
+                      <div className="text-[10px] font-bold uppercase text-emerald-600 dark:text-emerald-400">Coming</div>
+                      <div className="text-xl font-black text-emerald-700 dark:text-emerald-300">
+                        {matchBreakdown.summary?.coming || 0}
+                      </div>
+                    </div>
+                    <div className="bg-rose-50 dark:bg-rose-950/40 p-3 rounded-2xl border border-rose-200 dark:border-rose-800 text-center">
+                      <div className="text-[10px] font-bold uppercase text-rose-600 dark:text-rose-400">Can&apos;t Make It</div>
+                      <div className="text-xl font-black text-rose-700 dark:text-rose-300">
+                        {matchBreakdown.summary?.notComing || 0}
+                      </div>
+                    </div>
+                    <div className="bg-amber-50 dark:bg-amber-950/40 p-3 rounded-2xl border border-amber-200 dark:border-amber-800 text-center">
+                      <div className="text-[10px] font-bold uppercase text-amber-600 dark:text-amber-400">No Response</div>
+                      <div className="text-xl font-black text-amber-700 dark:text-amber-300">
+                        {matchBreakdown.summary?.noResponse || 0}
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Team Rosters Side-by-Side */}
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                    {/* Team 1 */}
+                    <div className="bg-blue-50/40 dark:bg-blue-950/20 p-5 rounded-2xl border border-blue-100 dark:border-blue-900/40 space-y-3">
+                      <div className="flex items-center justify-between pb-2 border-b border-blue-200/60 dark:border-blue-800/60">
+                        <div>
+                          <div className="text-[10px] font-black uppercase text-blue-600 tracking-wider">TEAM 1</div>
+                          <div className="text-base font-black text-gray-900 dark:text-white">
+                            {matchBreakdown.teams?.team1?.teamName || "Team 1"}
+                          </div>
+                        </div>
+                        <span className="text-xs font-bold bg-blue-100 dark:bg-blue-900 text-blue-800 dark:text-blue-200 px-2 py-0.5 rounded-lg">
+                          {matchBreakdown.teams?.team1?.players?.length || 0} Players
+                        </span>
+                      </div>
+
+                      <div className="space-y-2 max-h-80 overflow-y-auto pr-1">
+                        {matchBreakdown.teams?.team1?.players?.map((p: any) => (
+                          <div
+                            key={p.id}
+                            className="bg-white dark:bg-zinc-800 p-2.5 rounded-xl border border-gray-100 dark:border-zinc-700 flex items-center justify-between gap-2"
+                          >
+                            <div className="min-w-0">
+                              <div className="flex items-center gap-1.5">
+                                <span className="text-xs font-black text-gray-900 dark:text-white truncate">
+                                  {p.name}
+                                </span>
+                                {p.isCaptain && (
+                                  <span className="text-[9px] font-black uppercase bg-amber-100 dark:bg-amber-900/60 text-amber-800 dark:text-amber-300 px-1.5 py-0.5 rounded">
+                                    Captain
+                                  </span>
+                                )}
+                              </div>
+                              <div className="text-[10px] text-gray-400 font-medium">
+                                EMP: {p.employeeId}
+                              </div>
+                            </div>
+
+                            <span
+                              className={`px-2 py-0.5 rounded-md text-[10px] font-black shrink-0 border ${
+                                p.response === "COMING"
+                                  ? "bg-emerald-50 text-emerald-700 border-emerald-200 dark:bg-emerald-950/60 dark:text-emerald-300"
+                                  : p.response === "NOT_COMING"
+                                  ? "bg-rose-50 text-rose-700 border-rose-200 dark:bg-rose-950/60 dark:text-rose-300"
+                                  : "bg-gray-100 text-gray-600 border-gray-200 dark:bg-zinc-700 dark:text-gray-300"
+                              }`}
+                            >
+                              {p.response === "COMING"
+                                ? "✓ Coming"
+                                : p.response === "NOT_COMING"
+                                ? "✕ Can't Make It"
+                                : "— No Response"}
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+
+                    {/* Team 2 */}
+                    <div className="bg-rose-50/40 dark:bg-rose-950/20 p-5 rounded-2xl border border-rose-100 dark:border-rose-900/40 space-y-3">
+                      <div className="flex items-center justify-between pb-2 border-b border-rose-200/60 dark:border-rose-800/60">
+                        <div>
+                          <div className="text-[10px] font-black uppercase text-rose-600 tracking-wider">TEAM 2</div>
+                          <div className="text-base font-black text-gray-900 dark:text-white">
+                            {matchBreakdown.teams?.team2?.teamName || "Team 2"}
+                          </div>
+                        </div>
+                        <span className="text-xs font-bold bg-rose-100 dark:bg-rose-900 text-rose-800 dark:text-rose-200 px-2 py-0.5 rounded-lg">
+                          {matchBreakdown.teams?.team2?.players?.length || 0} Players
+                        </span>
+                      </div>
+
+                      <div className="space-y-2 max-h-80 overflow-y-auto pr-1">
+                        {matchBreakdown.teams?.team2?.players?.map((p: any) => (
+                          <div
+                            key={p.id}
+                            className="bg-white dark:bg-zinc-800 p-2.5 rounded-xl border border-gray-100 dark:border-zinc-700 flex items-center justify-between gap-2"
+                          >
+                            <div className="min-w-0">
+                              <div className="flex items-center gap-1.5">
+                                <span className="text-xs font-black text-gray-900 dark:text-white truncate">
+                                  {p.name}
+                                </span>
+                                {p.isCaptain && (
+                                  <span className="text-[9px] font-black uppercase bg-amber-100 dark:bg-amber-900/60 text-amber-800 dark:text-amber-300 px-1.5 py-0.5 rounded">
+                                    Captain
+                                  </span>
+                                )}
+                              </div>
+                              <div className="text-[10px] text-gray-400 font-medium">
+                                EMP: {p.employeeId}
+                              </div>
+                            </div>
+
+                            <span
+                              className={`px-2 py-0.5 rounded-md text-[10px] font-black shrink-0 border ${
+                                p.response === "COMING"
+                                  ? "bg-emerald-50 text-emerald-700 border-emerald-200 dark:bg-emerald-950/60 dark:text-emerald-300"
+                                  : p.response === "NOT_COMING"
+                                  ? "bg-rose-50 text-rose-700 border-rose-200 dark:bg-rose-950/60 dark:text-rose-300"
+                                  : "bg-gray-100 text-gray-600 border-gray-200 dark:bg-zinc-700 dark:text-gray-300"
+                              }`}
+                            >
+                              {p.response === "COMING"
+                                ? "✓ Coming"
+                                : p.response === "NOT_COMING"
+                                ? "✕ Can't Make It"
+                                : "— No Response"}
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                </>
+              )}
+            </div>
+
+            {/* Modal Footer */}
+            <div className="pt-4 border-t border-gray-100 dark:border-zinc-800 flex items-center justify-between text-xs text-gray-400">
+              <span className="font-medium">
+                Responses are purely informational. Committee retains full manual control of match start and walkover actions.
+              </span>
+              <button
+                type="button"
+                onClick={() => setViewingResponsesMatch(null)}
+                className="px-5 py-2.5 bg-gray-100 dark:bg-zinc-800 hover:bg-gray-200 text-gray-800 dark:text-gray-200 font-bold rounded-xl transition-colors"
+              >
+                Close
+              </button>
+            </div>
           </div>
         </div>
       )}
