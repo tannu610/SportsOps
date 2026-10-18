@@ -44,6 +44,8 @@ export async function POST(req: Request) {
           .eq('event_id', match.event_id);
 
         const allMatching = (teamPlayers || []).filter((p: any) => {
+          if (scoreMeta.team1_id && p.team_id === scoreMeta.team1_id) return true;
+          if (scoreMeta.team2_id && p.team_id === scoreMeta.team2_id) return true;
           const t = extractPlayerTeam(p);
           return t && (
             (scoreMeta.team1_name && t.toLowerCase() === scoreMeta.team1_name.toLowerCase()) ||

@@ -250,12 +250,12 @@ export async function POST(req: Request) {
       }
     }
 
-    // 5. For team-based sports (Cricket), manage relational cricket_teams and cricket_team_members
+    // 5. For team-based sports (Cricket), manage relational teams table and players.team_id
     if (importStrategy.isTeamBased && validation.teamsDetected.length > 0) {
       try {
         const { data: currentEventPlayers } = await supabase
           .from('players')
-          .select('id, name, employee_id, push_subscription')
+          .select('id, name, employee_id, push_subscription, team_id')
           .eq('event_id', eventId);
 
         for (const tName of validation.teamsDetected) {
@@ -275,33 +275,35 @@ export async function POST(req: Request) {
             }
           }
 
-          // Match or insert team in cricket_teams
+          // Match or insert team in teams table (sport-aware, unique per event_id, sport, name)
           const { data: existingTeam } = await supabase
-            .from('cricket_teams')
-            .select('id, name')
+            .from('teams')
+            .select('id, name, captain_player_id')
             .eq('event_id', eventId)
+            .eq('sport', 'Cricket')
             .eq('name', tName)
             .maybeSingle();
 
           let teamId: string | null = existingTeam?.id || null;
 
           if (teamId) {
-            await supabase
-              .from('cricket_teams')
-              .update({
-                captain_name: declaredCaptainName,
-                captain_player_id: captainPlayerId,
-                updated_at: new Date().toISOString()
-              })
-              .eq('id', teamId);
+            if (captainPlayerId && existingTeam?.captain_player_id !== captainPlayerId) {
+              await supabase
+                .from('teams')
+                .update({
+                  captain_player_id: captainPlayerId,
+                  updated_at: new Date().toISOString()
+                })
+                .eq('id', teamId);
+            }
           } else {
             const { data: newTeam } = await supabase
-              .from('cricket_teams')
+              .from('teams')
               .insert({
                 event_id: eventId,
+                sport: 'Cricket',
                 name: tName,
                 category: 'Open Cricket',
-                captain_name: declaredCaptainName,
                 captain_player_id: captainPlayerId
               })
               .select('id')
@@ -312,40 +314,26 @@ export async function POST(req: Request) {
             }
           }
 
-          // Link team members in cricket_team_members
+          // Link player records with team_id
           if (teamId && currentEventPlayers) {
-            const teamPlayers = currentEventPlayers.filter(
-              (p: any) => (p.team_name === tName || p.push_subscription?._metadata?.team_name === tName)
-            );
+            const teamPlayerIds = currentEventPlayers
+              .filter(
+                (p: any) =>
+                  (p.team_name === tName || p.push_subscription?._metadata?.team_name === tName) &&
+                  p.team_id !== teamId
+              )
+              .map((p: any) => p.id);
 
-            for (const tp of teamPlayers) {
-              const isCap = tp.id === captainPlayerId || tp.push_subscription?._metadata?.is_captain === true;
-              const { data: existingMember } = await supabase
-                .from('cricket_team_members')
-                .select('id, is_captain')
-                .eq('team_id', teamId)
-                .eq('player_id', tp.id)
-                .maybeSingle();
-
-              if (!existingMember) {
-                await supabase
-                  .from('cricket_team_members')
-                  .insert({
-                    team_id: teamId,
-                    player_id: tp.id,
-                    is_captain: isCap
-                  });
-              } else if (existingMember.is_captain !== isCap) {
-                await supabase
-                  .from('cricket_team_members')
-                  .update({ is_captain: isCap })
-                  .eq('id', existingMember.id);
-              }
+            if (teamPlayerIds.length > 0) {
+              await supabase
+                .from('players')
+                .update({ team_id: teamId })
+                .in('id', teamPlayerIds);
             }
           }
         }
       } catch (teamRelErr) {
-        console.warn('Relational cricket_teams update skipped:', teamRelErr);
+        console.warn('Relational teams update skipped:', teamRelErr);
       }
     }
 

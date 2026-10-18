@@ -89,32 +89,25 @@ CREATE TABLE IF NOT EXISTS players (
   CONSTRAINT players_event_id_emp_sport_cat_key UNIQUE (event_id, employee_id, sport, category)
 );
 
--- 2.2.1 Cricket Teams Table
-CREATE TABLE IF NOT EXISTS cricket_teams (
+-- 2.2.1 Teams Table (Sport-Aware, for Cricket and team sports)
+CREATE TABLE IF NOT EXISTS teams (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   event_id UUID NOT NULL REFERENCES events(id) ON DELETE CASCADE,
+  sport TEXT NOT NULL DEFAULT 'Cricket',
   name TEXT NOT NULL,
   category TEXT DEFAULT 'Open Cricket',
   captain_player_id UUID REFERENCES players(id) ON DELETE SET NULL,
-  captain_name TEXT,
-  created_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()),
-  updated_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()),
-  CONSTRAINT uq_cricket_teams_event_name UNIQUE (event_id, name)
+  created_at TIMESTAMPTZ DEFAULT timezone('utc'::text, now()),
+  updated_at TIMESTAMPTZ DEFAULT timezone('utc'::text, now()),
+  CONSTRAINT uq_event_sport_team_name UNIQUE (event_id, sport, name)
 );
 
--- 2.2.2 Cricket Team Members Table (Relational Roster)
-CREATE TABLE IF NOT EXISTS cricket_team_members (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  team_id UUID NOT NULL REFERENCES cricket_teams(id) ON DELETE CASCADE,
-  player_id UUID NOT NULL REFERENCES players(id) ON DELETE CASCADE,
-  is_captain BOOLEAN DEFAULT FALSE,
-  created_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()),
-  CONSTRAINT uq_cricket_team_player UNIQUE (team_id, player_id)
-);
+-- Link players to teams
+ALTER TABLE players ADD COLUMN IF NOT EXISTS team_id UUID REFERENCES teams(id) ON DELETE SET NULL;
 
 -- 2.3 Matches Table
 -- NOTE: Named foreign keys (fk_t1p1, fk_t1p2, fk_t2p1, fk_t2p2) are REQUIRED
--- by PostgREST query joins in the Next.js app.
+-- by PostgREST query joins in the Next.js app for Badminton.
 CREATE TABLE IF NOT EXISTS matches (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   event_id UUID REFERENCES events(id) ON DELETE CASCADE,
@@ -122,6 +115,8 @@ CREATE TABLE IF NOT EXISTS matches (
   sport TEXT NOT NULL DEFAULT 'Other',
   category TEXT DEFAULT 'NA',
   phase TEXT DEFAULT 'Round 1',
+  team1_id UUID REFERENCES teams(id) ON DELETE SET NULL,
+  team2_id UUID REFERENCES teams(id) ON DELETE SET NULL,
   team1_p1_id UUID,
   team1_p2_id UUID,
   team2_p1_id UUID,

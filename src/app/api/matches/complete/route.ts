@@ -87,9 +87,15 @@ export async function POST(req: Request) {
 
       (teamPlayers || []).forEach((p: any) => {
         const t = extractPlayerTeam(p);
-        if (t && scoreMeta.team1_name && t.toLowerCase() === scoreMeta.team1_name.toLowerCase()) {
+        if (
+          (scoreMeta.team1_id && p.team_id === scoreMeta.team1_id) ||
+          (t && scoreMeta.team1_name && t.toLowerCase() === scoreMeta.team1_name.toLowerCase())
+        ) {
           t1List.push(p.id);
-        } else if (t && scoreMeta.team2_name && t.toLowerCase() === scoreMeta.team2_name.toLowerCase()) {
+        } else if (
+          (scoreMeta.team2_id && p.team_id === scoreMeta.team2_id) ||
+          (t && scoreMeta.team2_name && t.toLowerCase() === scoreMeta.team2_name.toLowerCase())
+        ) {
           t2List.push(p.id);
         }
       });

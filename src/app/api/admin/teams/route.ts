@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import { createClient } from '@/utils/supabase/server';
-import { getStructuredTeams } from '@/utils/teamUtils';
+import { getStructuredTeams, extractPlayerTeam } from '@/utils/teamUtils';
 import { extractPlayerCode } from '@/utils/playerCode';
 
 export async function GET(req: Request) {
@@ -11,60 +11,79 @@ export async function GET(req: Request) {
 
     const supabase = await createClient();
 
-    // 1. If querying Cricket for an event, check relational cricket_teams first
-    if (eventId && (!sport || sport.toLowerCase().includes('cricket'))) {
+    // 1. If querying an event, check relational teams table first
+    if (eventId) {
       try {
         const { data: dbTeams, error: dbTeamsErr } = await supabase
-          .from('cricket_teams')
-          .select(`
-            id, name, category, captain_name, captain_player_id,
-            captain_player:players!captain_player_id(id, name, employee_id, push_subscription),
-            members:cricket_team_members(
-              id, is_captain,
-              player:players(id, employee_id, name, contact_info, status, push_subscription)
-            )
-          `)
+          .from('teams')
+          .select('id, name, sport, category, captain_player_id')
           .eq('event_id', eventId);
 
         if (!dbTeamsErr && dbTeams && dbTeams.length > 0) {
-          const structuredRelationalTeams = dbTeams.map((t: any) => {
-            const capPlayer = t.captain_player;
-            const capCode = capPlayer ? extractPlayerCode(capPlayer) : null;
-            const members = (t.members || []).map((m: any) => {
-              const p = m.player || {};
+          // Filter by sport if specified and not 'ALL'
+          const filteredTeams = dbTeams.filter((t: any) =>
+            !sport || sport === 'ALL' || t.sport?.toLowerCase().includes(sport.toLowerCase())
+          );
+
+          if (filteredTeams.length > 0) {
+            // Fetch all event players (including REGISTERED) to build rosters
+            const { data: eventPlayers } = await supabase
+              .from('players')
+              .select('id, employee_id, name, contact_info, status, push_subscription, team_id')
+              .eq('event_id', eventId);
+
+            const playersList = eventPlayers || [];
+
+            const structuredRelationalTeams = filteredTeams.map((t: any) => {
+              // Find captain player
+              const capPlayer = playersList.find(
+                (p: any) => p.id === t.captain_player_id || p.push_subscription?._metadata?.is_captain === true
+              );
+              const capCode = capPlayer ? extractPlayerCode(capPlayer) : null;
+
+              // Find roster players linked by team_id or metadata team_name
+              const members = playersList
+                .filter((p: any) => {
+                  if (p.team_id && p.team_id === t.id) return true;
+                  const extracted = extractPlayerTeam(p);
+                  return extracted && extracted.toLowerCase() === t.name.toLowerCase();
+                })
+                .map((p: any) => {
+                  const isCap = p.id === t.captain_player_id || p.push_subscription?._metadata?.is_captain === true;
+                  return {
+                    id: p.id,
+                    employeeId: p.employee_id,
+                    playerCode: extractPlayerCode(p) || '-',
+                    name: p.name,
+                    isCaptain: isCap,
+                    contact: p.contact_info,
+                    status: p.status
+                  };
+                });
+
               return {
-                id: p.id,
-                employeeId: p.employee_id,
-                playerCode: extractPlayerCode(p) || '-',
-                name: p.name,
-                isCaptain: m.is_captain || false,
-                contact: p.contact_info,
-                status: p.status
+                teamId: t.id,
+                teamName: t.name,
+                captainName: capPlayer?.name || null,
+                captainPlayerId: t.captain_player_id || capPlayer?.id || null,
+                captainPlayerCode: capCode,
+                sport: t.sport || sport || 'Cricket',
+                category: t.category || 'Open Cricket',
+                playerCount: members.length,
+                players: members
               };
             });
 
-            return {
-              teamId: t.id,
-              teamName: t.name,
-              captainName: t.captain_name || capPlayer?.name || null,
-              captainPlayerId: t.captain_player_id,
-              captainPlayerCode: capCode,
-              sport: 'Cricket',
-              category: t.category || 'Open Cricket',
-              playerCount: members.length,
-              players: members
-            };
-          });
-
-          return NextResponse.json({
-            success: true,
-            sport,
-            source: 'relational',
-            teamsCount: structuredRelationalTeams.length,
-            totalTeams: structuredRelationalTeams.length,
-            totalPlayers: structuredRelationalTeams.reduce((acc: number, t: any) => acc + t.playerCount, 0),
-            teams: structuredRelationalTeams.sort((a: any, b: any) => a.teamName.localeCompare(b.teamName))
-          });
+            return NextResponse.json({
+              success: true,
+              sport,
+              source: 'relational_teams',
+              teamsCount: structuredRelationalTeams.length,
+              totalTeams: structuredRelationalTeams.length,
+              totalPlayers: structuredRelationalTeams.reduce((acc: number, t: any) => acc + t.playerCount, 0),
+              teams: structuredRelationalTeams.sort((a: any, b: any) => a.teamName.localeCompare(b.teamName))
+            });
+          }
         }
       } catch {
         // Relational query failed or table not migrated yet; fallback to players table

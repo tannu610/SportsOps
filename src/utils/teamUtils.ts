@@ -33,6 +33,10 @@ export function extractPlayerTeam(player: any): string | null {
     return player.team_name.trim();
   }
 
+  if (player.team && typeof player.team.name === 'string' && player.team.name.trim()) {
+    return player.team.name.trim();
+  }
+
   if (typeof player.team === 'string' && player.team.trim()) {
     return player.team.trim();
   }
@@ -76,6 +80,7 @@ export function getStructuredTeams(players: any[], filterSport?: string): TeamGr
     {
       sport: string;
       category: string;
+      teamId?: string | null;
       captainName?: string | null;
       captainPlayerId?: string | null;
       players: TeamMember[];
@@ -107,12 +112,16 @@ export function getStructuredTeams(players: any[], filterSport?: string): TeamGr
       teamsMap.set(tName, {
         sport: p.sport || 'Cricket',
         category: p.category || 'Open Cricket',
+        teamId: p.team_id || (p.team && p.team.id) || null,
         captainName: meta?.captain_name || (isCap ? p.name : null),
         captainPlayerId: isCap ? p.id : null,
         players: []
       });
     } else {
       const existing = teamsMap.get(tName)!;
+      if (p.team_id && !existing.teamId) {
+        existing.teamId = p.team_id;
+      }
       if (meta?.captain_name && !existing.captainName) {
         existing.captainName = meta.captain_name;
       }
@@ -128,6 +137,7 @@ export function getStructuredTeams(players: any[], filterSport?: string): TeamGr
   const result: TeamGroup[] = [];
   teamsMap.forEach((val, teamName) => {
     result.push({
+      teamId: val.teamId || `team-${teamName.toLowerCase().replace(/[^a-z0-9]/g, '-')}`,
       teamName,
       captainName: val.captainName || null,
       captainPlayerId: val.captainPlayerId || null,

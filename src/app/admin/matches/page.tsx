@@ -195,6 +195,7 @@ export default function PlayAreaManagementPage() {
   const [formTeam2, setFormTeam2] = useState("");
   const [matchTime, setMatchTime] = useState("");
   const [formReportTime, setFormReportTime] = useState("");
+  const [cricketTeams, setCricketTeams] = useState<any[]>([]);
 
   // Load dynamic event configuration and database data
   async function loadAllData() {
@@ -253,10 +254,23 @@ export default function PlayAreaManagementPage() {
       }
 
       if (currentEventId) {
-        // 2. Fetch players
+        // 2a. Fetch Cricket Teams from /api/admin/teams (reads teams table or fallback metadata)
+        try {
+          const teamsRes = await fetch(`/api/admin/teams?eventId=${currentEventId}&sport=Cricket`);
+          if (teamsRes.ok) {
+            const teamsData = await teamsRes.json();
+            if (teamsData.teams && Array.isArray(teamsData.teams)) {
+              setCricketTeams(teamsData.teams);
+            }
+          }
+        } catch (tErr) {
+          console.error("Error loading cricket teams:", tErr);
+        }
+
+        // 2b. Fetch players (including push_subscription so extractPlayerTeam functions reliably)
         const { data: dbPlayers } = await supabase
           .from("players")
-          .select("id, employee_id, name, contact_info, status, sport, category, current_round")
+          .select("id, employee_id, name, contact_info, status, sport, category, current_round, push_subscription")
           .eq("event_id", currentEventId)
           .neq("status", "REGISTERED")
           .neq("status", "ABSENT")
@@ -341,6 +355,17 @@ export default function PlayAreaManagementPage() {
   };
 
   const availableCricketTeams = useMemo(() => {
+    // 1. Primary: Use structured event teams fetched from API (includes all teams with REGISTERED rosters)
+    if (cricketTeams && cricketTeams.length > 0) {
+      const names = cricketTeams
+        .map((t: any) => String(t.teamName || t.name || '').trim())
+        .filter(Boolean);
+      if (names.length > 0) {
+        return Array.from(new Set(names)).sort();
+      }
+    }
+
+    // 2. Fallback: extract from players in local state
     const teamsSet = new Set<string>();
     players.forEach((p) => {
       const t = extractPlayerTeam(p);
@@ -351,7 +376,7 @@ export default function PlayAreaManagementPage() {
       }
     });
     return Array.from(teamsSet).sort();
-  }, [players]);
+  }, [cricketTeams, players]);
 
   // Open Create Match modal with preselected court
   const openCreateModalForCourt = (courtName: string) => {
@@ -435,6 +460,13 @@ export default function PlayAreaManagementPage() {
 
       setIsSubmitting(true);
       try {
+        const t1Obj = cricketTeams.find(
+          (t: any) => (t.teamName || t.name)?.toLowerCase() === formTeam1.toLowerCase()
+        );
+        const t2Obj = cricketTeams.find(
+          (t: any) => (t.teamName || t.name)?.toLowerCase() === formTeam2.toLowerCase()
+        );
+
         const res = await fetch("/api/matches/create", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -446,6 +478,8 @@ export default function PlayAreaManagementPage() {
             playingArea: formArea,
             scheduledTime: matchTimestamp,
             reportingTime: reportingTimestamp,
+            team1_id: t1Obj?.teamId || t1Obj?.id || null,
+            team2_id: t2Obj?.teamId || t2Obj?.id || null,
             team1_name: formTeam1,
             team2_name: formTeam2
           })
@@ -1386,12 +1420,18 @@ export default function PlayAreaManagementPage() {
                         <select
                           required
                           value={formTeam1}
-                          onChange={(e) => setFormTeam1(e.target.value)}
+                          onChange={(e) => {
+                            const val = e.target.value;
+                            setFormTeam1(val);
+                            if (formTeam2 === val) {
+                              setFormTeam2("");
+                            }
+                          }}
                           className="w-full p-3 border border-blue-200 dark:border-zinc-700 bg-white dark:bg-zinc-800 rounded-xl font-bold text-sm text-blue-900 dark:text-blue-200 outline-none focus:ring-2 focus:ring-blue-500"
                         >
                           <option value="">-- Choose Team 1 --</option>
                           {availableCricketTeams.map((tName) => (
-                            <option key={tName} value={tName} disabled={tName === formTeam2}>
+                            <option key={tName} value={tName}>
                               {tName}
                             </option>
                           ))}
@@ -1415,11 +1455,13 @@ export default function PlayAreaManagementPage() {
                           className="w-full p-3 border border-rose-200 dark:border-zinc-700 bg-white dark:bg-zinc-800 rounded-xl font-bold text-sm text-rose-900 dark:text-rose-200 outline-none focus:ring-2 focus:ring-rose-500"
                         >
                           <option value="">-- Choose Team 2 --</option>
-                          {availableCricketTeams.map((tName) => (
-                            <option key={tName} value={tName} disabled={tName === formTeam1}>
-                              {tName}
-                            </option>
-                          ))}
+                          {availableCricketTeams
+                            .filter((tName) => tName !== formTeam1)
+                            .map((tName) => (
+                              <option key={tName} value={tName}>
+                                {tName}
+                              </option>
+                            ))}
                         </select>
                       </div>
                     </div>

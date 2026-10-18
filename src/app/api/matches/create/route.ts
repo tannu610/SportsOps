@@ -44,11 +44,13 @@ export async function POST(req: Request) {
       team2_p1_id,
       team2_p2_id = null,
       // For Cricket / team matches:
+      team1_id = null,
+      team2_id = null,
       team1_name,
       team2_name
     } = body;
 
-    const isCricket = sport?.toLowerCase() === 'cricket' || Boolean(team1_name && team2_name);
+    const isCricket = sport?.toLowerCase() === 'cricket' || Boolean(team1_id && team2_id) || Boolean(team1_name && team2_name);
 
     if (!eventId || !sport || !playingArea || !scheduledTime) {
       return NextResponse.json({ error: 'Missing required match fields' }, { status: 400 });
@@ -58,14 +60,48 @@ export async function POST(req: Request) {
     // BRANCH A: CRICKET TEAM-VS-TEAM MATCH CREATION
     // =========================================================================
     if (isCricket) {
-      const cleanTeam1 = String(team1_name || '').trim();
-      const cleanTeam2 = String(team2_name || '').trim();
+      let resolvedTeam1Id = team1_id;
+      let resolvedTeam2Id = team2_id;
+      let cleanTeam1 = String(team1_name || '').trim();
+      let cleanTeam2 = String(team2_name || '').trim();
+      let team1CaptainId: string | null = null;
+      let team2CaptainId: string | null = null;
+
+      // Check teams table to resolve IDs, names, and captains
+      try {
+        const { data: dbTeams } = await supabase
+          .from('teams')
+          .select('id, name, captain_player_id')
+          .eq('event_id', eventId);
+
+        if (dbTeams && dbTeams.length > 0) {
+          const t1 = dbTeams.find((t: any) =>
+            (resolvedTeam1Id && t.id === resolvedTeam1Id) ||
+            (cleanTeam1 && t.name.toLowerCase() === cleanTeam1.toLowerCase())
+          );
+          if (t1) {
+            resolvedTeam1Id = t1.id;
+            if (!cleanTeam1) cleanTeam1 = t1.name;
+            team1CaptainId = t1.captain_player_id;
+          }
+
+          const t2 = dbTeams.find((t: any) =>
+            (resolvedTeam2Id && t.id === resolvedTeam2Id) ||
+            (cleanTeam2 && t.name.toLowerCase() === cleanTeam2.toLowerCase())
+          );
+          if (t2) {
+            resolvedTeam2Id = t2.id;
+            if (!cleanTeam2) cleanTeam2 = t2.name;
+            team2CaptainId = t2.captain_player_id;
+          }
+        }
+      } catch {}
 
       if (!cleanTeam1 || !cleanTeam2) {
         return NextResponse.json({ error: 'Both Team 1 and Team 2 must be selected for a Cricket match.' }, { status: 400 });
       }
 
-      if (cleanTeam1.toLowerCase() === cleanTeam2.toLowerCase()) {
+      if (cleanTeam1.toLowerCase() === cleanTeam2.toLowerCase() || (resolvedTeam1Id && resolvedTeam1Id === resolvedTeam2Id)) {
         return NextResponse.json({ error: 'Team 1 and Team 2 cannot be the same team.' }, { status: 400 });
       }
 
@@ -80,11 +116,13 @@ export async function POST(req: Request) {
       }
 
       const team1Players = (eventPlayers || []).filter((p: any) => {
+        if (resolvedTeam1Id && p.team_id === resolvedTeam1Id) return true;
         const t = extractPlayerTeam(p);
         return t && t.toLowerCase() === cleanTeam1.toLowerCase();
       });
 
       const team2Players = (eventPlayers || []).filter((p: any) => {
+        if (resolvedTeam2Id && p.team_id === resolvedTeam2Id) return true;
         const t = extractPlayerTeam(p);
         return t && t.toLowerCase() === cleanTeam2.toLowerCase();
       });
@@ -95,6 +133,16 @@ export async function POST(req: Request) {
 
       if (team2Players.length === 0) {
         return NextResponse.json({ error: `No registered players found for Team 2: "${cleanTeam2}".` }, { status: 400 });
+      }
+
+      // Find captains from players if not resolved from teams table
+      if (!team1CaptainId) {
+        const cap = team1Players.find((p: any) => p.push_subscription?._metadata?.is_captain === true);
+        team1CaptainId = cap?.id || team1Players[0]?.id || null;
+      }
+      if (!team2CaptainId) {
+        const cap = team2Players.find((p: any) => p.push_subscription?._metadata?.is_captain === true);
+        team2CaptainId = cap?.id || team2Players[0]?.id || null;
       }
 
       const allPlayerIds = [...team1Players.map((p: any) => p.id), ...team2Players.map((p: any) => p.id)];
@@ -142,6 +190,8 @@ export async function POST(req: Request) {
       // Score metadata storing team information
       const scoreMetadata = {
         match_code: matchCode,
+        team1_id: resolvedTeam1Id,
+        team2_id: resolvedTeam2Id,
         team1_name: cleanTeam1,
         team2_name: cleanTeam2,
         is_team_match: true,
@@ -157,8 +207,10 @@ export async function POST(req: Request) {
         playing_area: playingArea,
         scheduled_time: scheduledTime,
         reporting_time: reportingTime || null,
-        team1_p1_id: team1Players[0]?.id || null,
-        team2_p1_id: team2Players[0]?.id || null,
+        team1_id: resolvedTeam1Id,
+        team2_id: resolvedTeam2Id,
+        team1_p1_id: team1CaptainId,
+        team2_p1_id: team2CaptainId,
         status: 'NOTIFIED',
         match_code: matchCode,
         score: JSON.stringify(scoreMetadata)
@@ -177,9 +229,11 @@ export async function POST(req: Request) {
         directInsert.error &&
         (directInsert.error.code === 'PGRST204' ||
           directInsert.error.code === '42703' ||
+          directInsert.error.message?.toLowerCase().includes('team1_id') ||
           directInsert.error.message?.toLowerCase().includes('match_code'))
       ) {
-        const fallbackPayload = {
+        // Fallback for schema cache / pending migration: insert without team1_id/team2_id/match_code
+        const fallbackPayload: any = {
           event_id: eventId,
           sport: 'Cricket',
           category: category || 'Open Cricket',
@@ -187,8 +241,8 @@ export async function POST(req: Request) {
           playing_area: playingArea,
           scheduled_time: scheduledTime,
           reporting_time: reportingTime || null,
-          team1_p1_id: team1Players[0]?.id || null,
-          team2_p1_id: team2Players[0]?.id || null,
+          team1_p1_id: team1CaptainId,
+          team2_p1_id: team2CaptainId,
           status: 'NOTIFIED',
           score: JSON.stringify(scoreMetadata)
         };

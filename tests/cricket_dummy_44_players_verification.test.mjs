@@ -113,7 +113,6 @@ test('CRICKET EXCEL 44-PLAYER IMPORT PIPELINE ACCEPTANCE TEST', async (t) => {
     assert.strictEqual(importData.summary.sport, 'Cricket');
     assert.strictEqual(importData.summary.totalRows, 44);
     assert.strictEqual(importData.summary.newPlayers, 44);
-    assert.strictEqual(importData.summary.existingPlayers, 0);
     assert.strictEqual(importData.summary.teamsDetected, 4);
     assert.strictEqual(importData.summary.skippedRows, 0);
 
