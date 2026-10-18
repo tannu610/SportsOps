@@ -633,7 +633,7 @@ function DashboardContent() {
                     onClick={() => handleResponse(isCricket ? "NOT_COMING" : "UNAVAILABLE")}
                     className="flex-1 py-3 bg-white/10 hover:bg-white/20 text-white rounded-xl font-medium transition-colors text-sm"
                   >
-                    {isCricket ? "CAN'T MAKE IT" : "I'M UNAVAILABLE"}
+                    I'M UNAVAILABLE
                   </button>
                   <button
                     onClick={() => handleResponse("COMING")}
@@ -648,14 +648,12 @@ function DashboardContent() {
                     {responseType === 'COMING' ? <CheckCircle2 className="w-6 h-6 shrink-0" /> : <XCircle className="w-6 h-6 shrink-0" />}
                     <div>
                       <div className="font-bold">
-                        {isCricket
-                          ? (responseType === 'COMING' ? "Response recorded: I'm Coming" : "Response recorded: Can't Make It")
-                          : "Response Recorded"}
+                        Response Recorded
                       </div>
                       <div className="text-xs opacity-90">
                         {responseType === 'COMING'
                           ? 'The committee knows you are on your way.'
-                          : (isCricket ? 'The committee has been notified you cannot make it.' : 'The committee has been notified you are unavailable.')}
+                          : 'The committee has been notified you are unavailable.'}
                       </div>
                     </div>
                   </div>

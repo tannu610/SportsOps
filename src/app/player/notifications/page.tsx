@@ -3,7 +3,7 @@
 import { useState, useEffect, Suspense, useMemo } from "react";
 import { useSearchParams } from "next/navigation";
 import Link from "next/link";
-import { ArrowLeft, Bell, Check, Clock, Trophy, CheckCheck, Inbox, RefreshCw } from "lucide-react";
+import { ArrowLeft, Bell, Clock, Trophy, CheckCheck, Inbox, RefreshCw } from "lucide-react";
 import { createClient } from "@/utils/supabase/client";
 
 interface NotificationItem {
@@ -27,10 +27,6 @@ function NotificationsContent() {
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [isRefreshing, setIsRefreshing] = useState<boolean>(false);
   const [filter, setFilter] = useState<'all' | 'unread'>('all');
-  const [matchResponses, setMatchResponses] = useState<Record<string, { response: string; respondedAt: string }>>({});
-  const [editingResponseMatchId, setEditingResponseMatchId] = useState<string | null>(null);
-  const [submittingMatchId, setSubmittingMatchId] = useState<string | null>(null);
-  const [toastMessage, setToastMessage] = useState<string | null>(null);
 
   // Sync playerId from URL searchParams or localStorage
   useEffect(() => {
@@ -54,58 +50,6 @@ function NotificationsContent() {
     );
   };
 
-  // Helper to fetch player's current responses for matches in notifications
-  const loadMatchResponses = async (items: NotificationItem[]) => {
-    if (!playerId) return;
-    const matchIds = Array.from(new Set(items.map((n) => n.match_id).filter(Boolean))) as string[];
-    if (matchIds.length === 0) return;
-
-    try {
-      const mapping: Record<string, { response: string; respondedAt: string }> = {};
-
-      // 1. Try relational match_player_responses table
-      const { data: dbResps } = await supabase
-        .from('match_player_responses')
-        .select('match_id, response, responded_at')
-        .eq('player_id', playerId)
-        .in('match_id', matchIds);
-
-      if (dbResps && dbResps.length > 0) {
-        dbResps.forEach((r: any) => {
-          mapping[r.match_id] = {
-            response: r.response,
-            respondedAt: r.responded_at
-          };
-        });
-      }
-
-      // 2. Fallback to matches.score JSON for any matches not in relational table
-      const missingMatchIds = matchIds.filter((mId) => !mapping[mId]);
-      if (missingMatchIds.length > 0) {
-        const { data: matches } = await supabase
-          .from('matches')
-          .select('id, score')
-          .in('id', missingMatchIds);
-
-        matches?.forEach((m: any) => {
-          try {
-            const meta = typeof m.score === 'string' ? JSON.parse(m.score) : m.score;
-            if (meta?.player_responses?.[playerId]) {
-              mapping[m.id] = {
-                response: meta.player_responses[playerId].response,
-                respondedAt: meta.player_responses[playerId].responded_at
-              };
-            }
-          } catch {}
-        });
-      }
-
-      setMatchResponses((prev) => ({ ...prev, ...mapping }));
-    } catch (err) {
-      console.error('Error loading match responses:', err);
-    }
-  };
-
   // Initial load of notifications
   useEffect(() => {
     if (!playerId) {
@@ -121,7 +65,6 @@ function NotificationsContent() {
         if (data.notifications) {
           setNotifications(data.notifications);
           setUnreadCount(data.unreadCount || 0);
-          await loadMatchResponses(data.notifications);
         }
       } catch (err) {
         console.error('Error fetching notifications:', err);
@@ -132,61 +75,6 @@ function NotificationsContent() {
 
     fetchNotifications();
   }, [playerId]);
-
-  const handleMatchResponse = async (matchId: string, response: 'COMING' | 'NOT_COMING') => {
-    if (!playerId || submittingMatchId === matchId) return;
-
-    const currentResp = matchResponses[matchId]?.response;
-    if (currentResp === response && editingResponseMatchId !== matchId) {
-      return;
-    }
-
-    setSubmittingMatchId(matchId);
-
-    // Optimistic UI update
-    setMatchResponses((prev) => ({
-      ...prev,
-      [matchId]: {
-        response,
-        respondedAt: new Date().toISOString()
-      }
-    }));
-    setEditingResponseMatchId(null);
-
-    const confirmationText = response === 'COMING' ? "Response recorded: I'm Coming" : "Response recorded: Can't Make It";
-    setToastMessage(confirmationText);
-    setTimeout(() => {
-      setToastMessage((cur) => (cur === confirmationText ? null : cur));
-    }, 4000);
-
-    try {
-      const res = await fetch('/api/player/matches/respond', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          matchId,
-          playerId,
-          response
-        })
-      });
-
-      const data = await res.json();
-      if (!res.ok) {
-        alert(data.error || 'Failed to record response. Please try again.');
-        if (currentResp) {
-          setMatchResponses((prev) => ({
-            ...prev,
-            [matchId]: { response: currentResp, respondedAt: new Date().toISOString() }
-          }));
-        }
-      }
-    } catch (err: any) {
-      console.error('Error submitting match response:', err);
-      alert('Network error submitting response. Please check your connection.');
-    } finally {
-      setSubmittingMatchId(null);
-    }
-  };
 
   // Real-time notification subscription
   useEffect(() => {
@@ -371,24 +259,6 @@ function NotificationsContent() {
 
   return (
     <div className="p-4 space-y-5 pb-24 max-w-md mx-auto relative">
-      {/* Toast Notification Banner */}
-      {toastMessage && (
-        <div className="fixed top-4 left-1/2 -translate-x-1/2 z-50 max-w-sm w-full px-4 animate-in fade-in slide-in-from-top-4 duration-300">
-          <div className="bg-gray-900 text-white px-4 py-3 rounded-2xl shadow-xl flex items-center justify-between gap-3 border border-gray-700">
-            <div className="flex items-center gap-2">
-              <div className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
-              <span className="text-xs font-black">{toastMessage}</span>
-            </div>
-            <button
-              onClick={() => setToastMessage(null)}
-              className="text-gray-400 hover:text-white text-xs font-bold"
-            >
-              ✕
-            </button>
-          </div>
-        </div>
-      )}
-
       {/* Header */}
       <div className="flex items-center justify-between">
         <Link
@@ -408,7 +278,6 @@ function NotificationsContent() {
                 if (data.notifications) {
                   setNotifications(data.notifications);
                   setUnreadCount(data.unreadCount || 0);
-                  await loadMatchResponses(data.notifications);
                 }
               } catch (err) {
                 console.error('Error refreshing notifications:', err);
@@ -539,95 +408,6 @@ function NotificationsContent() {
                   <p className="text-xs font-bold text-gray-800 dark:text-zinc-200 leading-relaxed">
                     {n.message}
                   </p>
-
-                  {/* Two-Way Match Response Action for MATCH_CALLED notifications */}
-                  {n.type === 'MATCH_CALLED' && n.match_id && (() => {
-                    const matchResp = matchResponses[n.match_id];
-                    const isEditing = editingResponseMatchId === n.match_id;
-                    const isSubmitting = submittingMatchId === n.match_id;
-
-                    if (matchResp && !isEditing) {
-                      const isComing = matchResp.response === 'COMING';
-                      return (
-                        <div
-                          className={`p-3 rounded-xl border flex items-center justify-between gap-2 ${
-                            isComing
-                              ? 'bg-emerald-50 dark:bg-emerald-950/40 border-emerald-200 dark:border-emerald-800 text-emerald-900 dark:text-emerald-200'
-                              : 'bg-rose-50 dark:bg-rose-950/40 border-rose-200 dark:border-rose-800 text-rose-900 dark:text-rose-200'
-                          }`}
-                          onClick={(e) => e.stopPropagation()}
-                        >
-                          <div className="flex items-center gap-2">
-                            {isComing ? (
-                              <div className="w-6 h-6 rounded-full bg-emerald-100 dark:bg-emerald-900/60 flex items-center justify-center text-emerald-700 dark:text-emerald-300 shrink-0">
-                                <Check className="w-3.5 h-3.5" />
-                              </div>
-                            ) : (
-                              <div className="w-6 h-6 rounded-full bg-rose-100 dark:bg-rose-900/60 flex items-center justify-center text-rose-700 dark:text-rose-300 shrink-0">
-                                <span className="text-xs font-black">✕</span>
-                              </div>
-                            )}
-                            <div>
-                              <div className="text-[11px] font-black">
-                                {isComing ? "Response recorded: I'm Coming" : "Response recorded: Can't Make It"}
-                              </div>
-                              <div className="text-[10px] text-gray-500 dark:text-gray-400 font-medium">
-                                Recorded {formatTime(matchResp.respondedAt)}
-                              </div>
-                            </div>
-                          </div>
-
-                          <button
-                            type="button"
-                            onClick={() => setEditingResponseMatchId(n.match_id!)}
-                            className="text-[11px] font-black text-indigo-600 dark:text-indigo-400 hover:underline px-2.5 py-1 rounded-lg hover:bg-white/70 dark:hover:bg-zinc-800 transition-colors shrink-0"
-                          >
-                            Change
-                          </button>
-                        </div>
-                      );
-                    }
-
-                    return (
-                      <div
-                        className="p-3 rounded-xl bg-slate-50 dark:bg-zinc-800/60 border border-slate-200 dark:border-zinc-700 space-y-2"
-                        onClick={(e) => e.stopPropagation()}
-                      >
-                        <div className="text-[10px] font-black uppercase tracking-wider text-gray-500 dark:text-gray-400">
-                          Match Availability
-                        </div>
-                        <div className="flex gap-2">
-                          <button
-                            type="button"
-                            disabled={isSubmitting}
-                            onClick={() => handleMatchResponse(n.match_id!, 'COMING')}
-                            className="flex-1 py-2 px-3 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white font-black text-xs rounded-xl shadow-sm transition-all flex items-center justify-center gap-1.5"
-                          >
-                            <Check className="w-3.5 h-3.5" /> I&apos;M COMING
-                          </button>
-                          <button
-                            type="button"
-                            disabled={isSubmitting}
-                            onClick={() => handleMatchResponse(n.match_id!, 'NOT_COMING')}
-                            className="flex-1 py-2 px-3 bg-white dark:bg-zinc-800 hover:bg-rose-50 dark:hover:bg-rose-950/40 text-rose-600 dark:text-rose-400 border border-rose-200 dark:border-rose-900 disabled:opacity-50 font-black text-xs rounded-xl transition-all flex items-center justify-center gap-1.5"
-                          >
-                            CAN&apos;T MAKE IT
-                          </button>
-                        </div>
-                        {isEditing && (
-                          <div className="text-right">
-                            <button
-                              type="button"
-                              onClick={() => setEditingResponseMatchId(null)}
-                              className="text-[10px] font-bold text-gray-400 hover:text-gray-600 dark:hover:text-gray-200"
-                            >
-                              Cancel
-                            </button>
-                          </div>
-                        )}
-                      </div>
-                    );
-                  })()}
 
                   <div className="pt-2 flex items-center justify-between">
                     <Link
