@@ -7,6 +7,7 @@ import { Bell, MapPin, Clock, CalendarDays, CheckCircle2, XCircle, Trophy, Refre
 import { createClient } from "@/utils/supabase/client";
 import { extractPlayerCode } from "@/utils/playerCode";
 import { extractMatchCode } from "@/utils/matchCode";
+import { extractPlayerTeam, isPlayerCaptain } from "@/utils/teamUtils";
 
 function DashboardContent() {
   const supabase = useMemo(() => createClient(), []);
@@ -100,16 +101,18 @@ function DashboardContent() {
     let mData: any[] = [];
     const isCricketPlayer = Boolean(pData?.sport?.toLowerCase().includes('cricket'));
 
+    const MATCH_FIELDS = `
+      id, event_id, sport, category, phase, playing_area, scheduled_time, reporting_time, status, score,
+      team1_p1:players!fk_t1p1(id, name),
+      team1_p2:players!fk_t1p2(id, name),
+      team2_p1:players!fk_t2p1(id, name),
+      team2_p2:players!fk_t2p2(id, name)
+    `;
+
     // 1. Direct match assignment (singles / doubles / team captain)
     const q1 = await supabase
       .from('matches')
-      .select(`
-        id, match_code, sport, category, playing_area, scheduled_time, reporting_time, status, score, team1_id, team2_id,
-        team1_p1:players!fk_t1p1(id, name),
-        team1_p2:players!fk_t1p2(id, name),
-        team2_p1:players!fk_t2p1(id, name),
-        team2_p2:players!fk_t2p2(id, name)
-      `)
+      .select(MATCH_FIELDS)
       .or(`team1_p1_id.eq.${playerId},team1_p2_id.eq.${playerId},team2_p1_id.eq.${playerId},team2_p2_id.eq.${playerId}`)
       .in('status', ['SCHEDULED', 'NOTIFIED', 'PLAYER_CONFIRMED', 'READY', 'LIVE', 'DELAYED', 'NO-SHOW PENDING', 'NO_SHOW_PENDING'])
       .order('scheduled_time', { ascending: true })
@@ -119,64 +122,7 @@ function DashboardContent() {
       mData = q1.data;
     }
 
-    // 2. Cricket Team assignment via player.team_id
-    if (mData.length === 0 && isCricketPlayer && pData?.team_id) {
-      try {
-        const qTeam = await supabase
-          .from('matches')
-          .select(`
-            id, match_code, sport, category, playing_area, scheduled_time, reporting_time, status, score, team1_id, team2_id,
-            team1_p1:players!fk_t1p1(id, name),
-            team1_p2:players!fk_t1p2(id, name),
-            team2_p1:players!fk_t2p1(id, name),
-            team2_p2:players!fk_t2p2(id, name)
-          `)
-          .or(`team1_id.eq.${pData.team_id},team2_id.eq.${pData.team_id}`)
-          .in('status', ['SCHEDULED', 'NOTIFIED', 'PLAYER_CONFIRMED', 'READY', 'LIVE', 'DELAYED', 'NO-SHOW PENDING', 'NO_SHOW_PENDING'])
-          .order('scheduled_time', { ascending: true })
-          .limit(1);
-
-        if (!qTeam.error && qTeam.data && qTeam.data.length > 0) {
-          mData = qTeam.data;
-        }
-      } catch {}
-    }
-
-    // 3. Fallback: Check matches table for score containing playerId
-    if (mData.length === 0 && isCricketPlayer && pData?.event_id) {
-      try {
-        const { data: cricketMatches } = await supabase
-          .from('matches')
-          .select(`
-            id, match_code, sport, category, playing_area, scheduled_time, reporting_time, status, score, team1_id, team2_id,
-            team1_p1:players!fk_t1p1(id, name),
-            team1_p2:players!fk_t1p2(id, name),
-            team2_p1:players!fk_t2p1(id, name),
-            team2_p2:players!fk_t2p2(id, name)
-          `)
-          .eq('event_id', pData.event_id)
-          .in('status', ['SCHEDULED', 'NOTIFIED', 'PLAYER_CONFIRMED', 'READY', 'LIVE', 'DELAYED', 'NO-SHOW PENDING', 'NO_SHOW_PENDING'])
-          .order('scheduled_time', { ascending: true })
-          .limit(10);
-
-        if (cricketMatches) {
-          const found = cricketMatches.find((m) => {
-            try {
-              const meta = typeof m.score === 'string' ? JSON.parse(m.score) : m.score;
-              return (
-                meta?.team1_player_ids?.includes(playerId) ||
-                meta?.team2_player_ids?.includes(playerId)
-              );
-            } catch {
-              return false;
-            }
-          });
-          if (found) mData = [found];
-        }
-      } catch {}
-    }
-
-    // 4. Fallback: check recent MATCH_CALLED notification
+    // 2. Check recent MATCH_CALLED notification for this player
     if (mData.length === 0) {
       try {
         const { data: notifs } = await supabase
@@ -185,24 +131,72 @@ function DashboardContent() {
           .eq('player_id', playerId)
           .eq('type', 'MATCH_CALLED')
           .order('sent_at', { ascending: false })
-          .limit(1);
+          .limit(5);
 
-        if (notifs && notifs[0]?.match_id) {
-          const { data: byId } = await supabase
-            .from('matches')
-            .select(`
-              id, match_code, sport, category, playing_area, scheduled_time, reporting_time, status, score, team1_id, team2_id,
-              team1_p1:players!fk_t1p1(id, name),
-              team1_p2:players!fk_t1p2(id, name),
-              team2_p1:players!fk_t2p1(id, name),
-              team2_p2:players!fk_t2p2(id, name)
-            `)
-            .eq('id', notifs[0].match_id)
-            .in('status', ['SCHEDULED', 'NOTIFIED', 'PLAYER_CONFIRMED', 'READY', 'LIVE', 'DELAYED', 'NO-SHOW PENDING', 'NO_SHOW_PENDING']);
+        if (notifs && notifs.length > 0) {
+          const matchIds = Array.from(new Set(notifs.map((n) => n.match_id).filter(Boolean)));
+          if (matchIds.length > 0) {
+            const { data: byId } = await supabase
+              .from('matches')
+              .select(MATCH_FIELDS)
+              .in('id', matchIds)
+              .in('status', ['SCHEDULED', 'NOTIFIED', 'PLAYER_CONFIRMED', 'READY', 'LIVE', 'DELAYED', 'NO-SHOW PENDING', 'NO_SHOW_PENDING'])
+              .order('scheduled_time', { ascending: true })
+              .limit(1);
 
-          if (byId && byId.length > 0) mData = byId;
+            if (byId && byId.length > 0) {
+              mData = byId;
+            }
+          }
         }
-      } catch {}
+      } catch (err) {
+        console.error('Error fetching match by notification:', err);
+      }
+    }
+
+    // 3. Fallback: Check matches table for score containing playerId or team name
+    if (mData.length === 0 && isCricketPlayer) {
+      try {
+        let matchQuery = supabase
+          .from('matches')
+          .select(MATCH_FIELDS)
+          .in('status', ['SCHEDULED', 'NOTIFIED', 'PLAYER_CONFIRMED', 'READY', 'LIVE', 'DELAYED', 'NO-SHOW PENDING', 'NO_SHOW_PENDING'])
+          .order('scheduled_time', { ascending: true })
+          .limit(20);
+
+        if (pData?.event_id) {
+          matchQuery = matchQuery.eq('event_id', pData.event_id);
+        }
+
+        const { data: cricketMatches } = await matchQuery;
+        if (cricketMatches) {
+          const found = cricketMatches.find((m) => {
+            try {
+              const meta = typeof m.score === 'string' ? JSON.parse(m.score) : m.score;
+              if (
+                meta?.team1_player_ids?.includes(playerId) ||
+                meta?.team2_player_ids?.includes(playerId)
+              ) {
+                return true;
+              }
+              const playerTeam = pData?.push_subscription?._metadata?.team_name;
+              if (
+                playerTeam &&
+                ((meta?.team1_name && meta.team1_name.toLowerCase() === playerTeam.toLowerCase()) ||
+                  (meta?.team2_name && meta.team2_name.toLowerCase() === playerTeam.toLowerCase()))
+              ) {
+                return true;
+              }
+            } catch {
+              return false;
+            }
+            return false;
+          });
+          if (found) mData = [found];
+        }
+      } catch (err) {
+        console.error('Error searching cricket matches by roster:', err);
+      }
     }
 
     if (mData && mData.length > 0) {
@@ -214,36 +208,32 @@ function DashboardContent() {
 
       // Check player's response state for this match
       let hasResp = false;
-      try {
-        const { data: respRow } = await supabase
-          .from('match_player_responses')
-          .select('response')
-          .eq('match_id', normalized.id)
-          .eq('player_id', playerId)
-          .maybeSingle();
+      let storedType: 'COMING' | 'UNAVAILABLE' | null = null;
 
-        if (respRow?.response) {
+      try {
+        const meta = typeof normalized.score === 'string' ? JSON.parse(normalized.score) : normalized.score;
+        if (meta?.player_responses?.[playerId]?.response) {
           hasResp = true;
-          setHasAcknowledged(true);
-          setResponseType(respRow.response as any);
+          const r = meta.player_responses[playerId].response;
+          storedType = r === 'COMING' ? 'COMING' : 'UNAVAILABLE';
         }
       } catch {}
 
       if (!hasResp) {
         try {
-          const meta = typeof normalized.score === 'string' ? JSON.parse(normalized.score) : normalized.score;
-          if (meta?.player_responses?.[playerId]) {
-            hasResp = true;
-            setHasAcknowledged(true);
-            setResponseType(meta.player_responses[playerId].response as any);
+          const res = await fetch(`/api/player/matches/respond?matchId=${normalized.id}&playerId=${playerId}`);
+          if (res.ok) {
+            const data = await res.json();
+            if (data?.response) {
+              hasResp = true;
+              storedType = data.response === 'COMING' ? 'COMING' : 'UNAVAILABLE';
+            }
           }
         } catch {}
       }
 
-      if (!hasResp) {
-        setHasAcknowledged(false);
-        setResponseType(null);
-      }
+      setHasAcknowledged(hasResp);
+      setResponseType(storedType);
     } else {
       setNextMatch(null);
       setHasAcknowledged(false);
@@ -338,7 +328,8 @@ function DashboardContent() {
       (player?.sport || nextMatch.sport || "").toLowerCase().includes("cricket")
     );
 
-    setResponseType(type);
+    const normalizedType = type === 'COMING' ? 'COMING' : 'UNAVAILABLE';
+    setResponseType(normalizedType);
     setHasAcknowledged(true);
     
     try {
@@ -394,8 +385,10 @@ function DashboardContent() {
     );
 
     if (isCricket) {
+      const playerTeam = player?.push_subscription?._metadata?.team_name;
       const isTeam1 =
         scoreObj?.team1_player_ids?.includes(playerId) ||
+        (playerTeam && scoreObj?.team1_name && playerTeam.toLowerCase() === scoreObj.team1_name.toLowerCase()) ||
         nextMatch.team1_id === player?.team_id ||
         nextMatch.team1_p1?.id === playerId;
 
@@ -430,12 +423,14 @@ function DashboardContent() {
       } else if (typeof nextMatch.score === "object" && nextMatch.score !== null) {
         scoreObj = nextMatch.score;
       }
+      const playerTeam = player?.push_subscription?._metadata?.team_name;
       const isTeam1 =
         scoreObj?.team1_player_ids?.includes(playerId) ||
+        (playerTeam && scoreObj?.team1_name && playerTeam.toLowerCase() === scoreObj.team1_name.toLowerCase()) ||
         nextMatch.team1_id === player?.team_id ||
         nextMatch.team1_p1?.id === playerId;
 
-      const myTeamName = isTeam1 ? (scoreObj?.team1_name || "Team 1") : (scoreObj?.team2_name || "Team 2");
+      const myTeamName = isTeam1 ? (scoreObj?.team1_name || playerTeam || "Team 1") : (scoreObj?.team2_name || playerTeam || "Team 2");
       return `Your Team: ${myTeamName}`;
     }
 
@@ -458,6 +453,8 @@ function DashboardContent() {
   const opponentName = getOpponentText();
   const partnerName = getPartnerText();
   const isCricket = Boolean((player?.sport || nextMatch?.sport || "").toLowerCase().includes("cricket"));
+  const playerTeamName = extractPlayerTeam(player);
+  const isCaptain = isPlayerCaptain(player);
 
   return (
     <div className="p-4 space-y-6 pb-20">
@@ -510,12 +507,29 @@ function DashboardContent() {
 
       {/* Header Info */}
       <div className="flex justify-between items-center bg-white dark:bg-zinc-900 p-4 rounded-2xl shadow-sm border border-gray-100 dark:border-zinc-800">
-        <div>
+        <div className="space-y-1">
           <h2 className="text-xl font-bold">Hi, {player.name.split(' ')[0]} 👋</h2>
-          <p className="text-gray-500 text-sm">{player.sport}</p>
+          <p className="text-gray-500 text-sm font-medium">{player.sport}</p>
           {extractPlayerCode(player) && (
-            <p className="text-xs font-mono font-semibold text-blue-600 dark:text-blue-400 mt-0.5">
+            <p className="text-xs font-mono font-semibold text-blue-600 dark:text-blue-400">
               Player Code: {extractPlayerCode(player)}
+            </p>
+          )}
+          {isCricket && (
+            <p className="text-xs font-semibold text-gray-700 dark:text-zinc-300">
+              Team:{" "}
+              {playerTeamName ? (
+                <>
+                  <span className="font-bold text-gray-900 dark:text-white">{playerTeamName}</span>
+                  {isCaptain && (
+                    <span className="ml-1 text-amber-600 dark:text-amber-400 font-bold">
+                      • Captain
+                    </span>
+                  )}
+                </>
+              ) : (
+                <span className="text-gray-400 italic font-normal">Not assigned yet</span>
+              )}
             </p>
           )}
         </div>
@@ -595,11 +609,6 @@ function DashboardContent() {
                   <div className="text-blue-100 text-xs font-semibold tracking-wider mb-1 uppercase">{nextMatch.sport} • {nextMatch.category}</div>
                   <div className="text-2xl font-bold leading-tight mt-1">vs {opponentName}</div>
                   {partnerName && <div className="text-blue-200 text-sm mt-1">{isCricket ? partnerName : `Partner: ${partnerName}`}</div>}
-                  {nextMatch.match_code && (
-                    <div className="text-blue-200/90 text-xs font-mono font-medium tracking-wide mt-1.5">
-                      Match Code: <span className="font-bold text-white tracking-widest">{nextMatch.match_code}</span>
-                    </div>
-                  )}
                 </div>
                 {nextMatch.status === 'NO-SHOW PENDING' ? (
                   <div className="bg-red-500 text-white text-[10px] font-bold px-2 py-1 rounded animate-pulse">URGENT</div>
@@ -630,42 +639,56 @@ function DashboardContent() {
               {!hasAcknowledged ? (
                 <div className="flex gap-3 pt-2">
                   <button
-                    onClick={() => handleResponse(isCricket ? "NOT_COMING" : "UNAVAILABLE")}
-                    className="flex-1 py-3 bg-white/10 hover:bg-white/20 text-white rounded-xl font-medium transition-colors text-sm"
+                    id="btn-unavailable"
+                    onClick={() => handleResponse("UNAVAILABLE")}
+                    className="flex-1 py-3 bg-white/10 hover:bg-white/20 text-white rounded-xl font-bold transition-colors text-sm uppercase tracking-wider"
                   >
-                    I'M UNAVAILABLE
+                    I&apos;M UNAVAILABLE
                   </button>
                   <button
+                    id="btn-coming"
                     onClick={() => handleResponse("COMING")}
-                    className="flex-1 py-3 bg-white text-blue-700 hover:bg-blue-50 rounded-xl font-bold transition-colors text-sm shadow-md"
+                    className="flex-1 py-3 bg-white text-blue-700 hover:bg-blue-50 rounded-xl font-black transition-colors text-sm shadow-md uppercase tracking-wider"
                   >
-                    I'M COMING
+                    I&apos;M COMING
                   </button>
                 </div>
               ) : (
-                <div className={`p-4 rounded-xl flex items-center justify-between gap-3 ${responseType === 'COMING' ? 'bg-green-500/20 text-green-100' : 'bg-red-500/20 text-red-100'}`}>
-                  <div className="flex items-center gap-3">
-                    {responseType === 'COMING' ? <CheckCircle2 className="w-6 h-6 shrink-0" /> : <XCircle className="w-6 h-6 shrink-0" />}
-                    <div>
-                      <div className="font-bold">
-                        Response Recorded
-                      </div>
-                      <div className="text-xs opacity-90">
+                <div
+                  id="match-response-status"
+                  className={`p-4 rounded-xl flex items-center justify-between gap-3 border ${
+                    responseType === 'COMING'
+                      ? 'bg-emerald-500/25 border-emerald-400/40 text-emerald-100'
+                      : 'bg-rose-500/25 border-rose-400/40 text-rose-100'
+                  }`}
+                >
+                  <div className="flex items-center gap-3 min-w-0">
+                    {responseType === 'COMING' ? (
+                      <CheckCircle2 className="w-6 h-6 shrink-0 text-emerald-300" />
+                    ) : (
+                      <XCircle className="w-6 h-6 shrink-0 text-rose-300" />
+                    )}
+                    <div className="min-w-0">
+                      <div className="font-black text-sm uppercase tracking-wide text-white">
                         {responseType === 'COMING'
-                          ? 'The committee knows you are on your way.'
-                          : 'The committee has been notified you are unavailable.'}
+                          ? "✓ YOU'RE MARKED AS COMING"
+                          : "✕ YOU'RE MARKED AS UNAVAILABLE"}
+                      </div>
+                      <div className="text-xs text-blue-100/90 mt-0.5">
+                        {responseType === 'COMING'
+                          ? "The committee knows you're on your way."
+                          : "The committee has been notified you're unavailable."}
                       </div>
                     </div>
                   </div>
-                  {isCricket && (
-                    <button
-                      type="button"
-                      onClick={() => setHasAcknowledged(false)}
-                      className="text-xs font-bold underline px-2 py-1 hover:text-white transition-colors shrink-0"
-                    >
-                      Change
-                    </button>
-                  )}
+                  <button
+                    type="button"
+                    id="btn-change-response"
+                    onClick={() => setHasAcknowledged(false)}
+                    className="text-xs font-black uppercase tracking-wider px-2.5 py-1.5 bg-white/15 hover:bg-white/25 rounded-lg text-white transition-colors shrink-0 border border-white/20"
+                  >
+                    CHANGE RESPONSE
+                  </button>
                 </div>
               )}
             </div>

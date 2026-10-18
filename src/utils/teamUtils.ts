@@ -54,6 +54,26 @@ export function extractPlayerTeam(player: any): string | null {
 }
 
 /**
+ * Determines if a player is designated as a team captain.
+ */
+export function isPlayerCaptain(player: any): boolean {
+  if (!player) return false;
+  const meta = player.push_subscription?._metadata;
+  if (meta?.is_captain === true) return true;
+  if (player.is_captain === true) return true;
+  if (
+    meta?.captain_name &&
+    typeof meta.captain_name === 'string' &&
+    player.name &&
+    typeof player.name === 'string' &&
+    meta.captain_name.trim().toLowerCase() === player.name.trim().toLowerCase()
+  ) {
+    return true;
+  }
+  return false;
+}
+
+/**
  * Groups players by their team name within an event.
  * Players without a team are excluded.
  */

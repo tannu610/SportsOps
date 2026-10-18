@@ -279,7 +279,7 @@ export async function POST(req: Request) {
         minute: '2-digit',
         hour12: true
       });
-      const notificationMessage = `Your Cricket match (${cleanTeam1} vs ${cleanTeam2}) at ${playingArea} is scheduled for ${formattedTime} (Match Code: ${matchCode}). Please report immediately.`;
+      const notificationMessage = `Your Cricket match (${cleanTeam1} vs ${cleanTeam2}) at ${playingArea} is scheduled for ${formattedTime}. Please report immediately.`;
 
       const notificationInserts = allPlayerIds.map((pid: string) => ({
         player_id: pid,
@@ -562,7 +562,7 @@ export async function POST(req: Request) {
         hour12: true
       });
       const categoryText = category && category !== 'NA' ? category : (phase || 'Round 1');
-      const notificationMessage = `Your ${sport} match (${categoryText}) at ${playingArea} is scheduled for ${formattedTime} (Match Code: ${matchCode}). Please report immediately.`;
+      const notificationMessage = `Your ${sport} match (${categoryText}) at ${playingArea} is scheduled for ${formattedTime}. Please report immediately.`;
 
       const notificationInserts = playerIds.map(pid => ({
         player_id: pid,

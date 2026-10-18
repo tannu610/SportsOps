@@ -120,6 +120,15 @@ test('CRICKET TWO-WAY PLAYER ↔ ADMIN RESPONSE SUITE', async (t) => {
 
     assert.ok(notifs && notifs.length > 0, 'Notifications must be created for players');
     notifs.forEach((n) => cleanupNotificationIds.push(n.id));
+
+    // Verify via player notifications endpoint that notification is present with match_id and code
+    const playerNotifRes = await fetch(`${baseUrl}/api/player/notifications?playerId=${t1Players[0].id}`);
+    assert.equal(playerNotifRes.status, 200, 'Player notifications endpoint must return 200');
+    const playerNotifJson = await playerNotifRes.json();
+    const calledNotif = playerNotifJson.notifications.find((n) => n.match_id === testMatch.id);
+    assert.ok(calledNotif, 'Player must receive MATCH_CALLED notification with match_id');
+    assert.equal(calledNotif.message.includes(testMatch.match_code), false, 'Notification message must NOT contain internal match code');
+    assert.ok(calledNotif.message.includes('Ground 1'), 'Notification message must contain playing area');
   });
 
   await t.test('2. Player submits response: "I\'M COMING" (COMING)', async () => {
